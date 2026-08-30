@@ -14,6 +14,7 @@ import time
 from datetime import datetime, time as dt_time
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.config import get_config
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
@@ -43,8 +44,12 @@ class Coordinator:
         self._data = MarketDataService(self._client)
         self._tracker = PositionTracker(self._client)
 
-        self._breaker = CircuitBreaker(self._tracker, RiskLimits())
-        self._allocator = AllocationManager(self._tracker, AllocationConfig())
+        cfg = get_config()
+        for problem in cfg.validate():
+            log.warning("Config problem: %s", problem)
+
+        self._breaker = CircuitBreaker(self._tracker, RiskLimits.from_config())
+        self._allocator = AllocationManager(self._tracker, AllocationConfig.from_config())
 
         self._options_agent = OptionsIncomeAgent(
             self._client, self._data, self._tracker, self._breaker, self._allocator
@@ -55,7 +60,7 @@ class Coordinator:
             self._tracker,
             self._breaker,
             self._allocator,
-            symbols=["SPY", "QQQ"],
+            symbols=cfg.vampire_symbols or ["SPY", "QQQ"],
         )
         self._risk_agent = RiskManagerAgent(
             self._client, self._tracker, self._breaker, self._allocator
@@ -81,6 +86,8 @@ class Coordinator:
                 "options_budget": budget.options_budget,
                 "vampire_used": budget.vampire_used,
                 "vampire_budget": budget.vampire_budget,
+                "unattributed_used": budget.unattributed_used,
+                "reserve_target": budget.reserve_target,
             },
             "vampire_status": self._vampire_agent.get_status(),
             "risk": risk_report,

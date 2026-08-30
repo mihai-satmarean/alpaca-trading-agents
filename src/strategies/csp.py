@@ -6,12 +6,12 @@ import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from alpaca.trading.requests import MarketOrderRequest
 from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.requests import MarketOrderRequest
 
 from src.core.alpaca_client import AlpacaClient
-from src.core.options_chain import OptionsChain, OptionCandidate
 from src.core.market_data import MarketDataService
+from src.core.options_chain import OptionCandidate, OptionsChain
 from src.core.position_tracker import PositionTracker
 from src.strategies.csp_scoring import QuotedPut, ScoringConfig, rank
 
@@ -52,6 +52,8 @@ class CashSecuredPutStrategy:
         max_allocation_per_trade: float = 0.10,
         max_delta: float = -0.30,
         quote_provider: Callable[[list[str]], dict[str, dict]] | None = None,
+        allocator=None,
+        breaker=None,
     ):
         self._client = client
         self._chain = chain
@@ -65,6 +67,8 @@ class CashSecuredPutStrategy:
         self.max_allocation_per_trade = max_allocation_per_trade
         self.max_delta = max_delta
         self._quote_provider = quote_provider
+        self._allocator = allocator
+        self._breaker = breaker
 
     def scan(self, symbols: list[str] | None = None) -> list[CSPOpportunity]:
         """Scan for sellable puts, priced on what each contract actually bids.
@@ -160,43 +164,80 @@ class CashSecuredPutStrategy:
         return premium_score + dte_score + liquidity_score
 
     def execute_best(self, max_trades: int = 3, budget: float | None = None) -> list[dict]:
-        """Execute top CSP opportunities within budget."""
+        """Execute top CSP opportunities within the options sleeve budget.
+
+        Every order is gated twice before it is sent: once against the sleeve
+        budget (the configured 80% split) and once against the per-trade and
+        per-position limits in the circuit breaker. Both gates already existed
+        and neither was called from this path, so a cash-secured put worth 45%
+        of the account could pass a 5% per-trade limit unnoticed.
+        """
         snapshot = self._tracker.get_snapshot()
-        available = budget or (snapshot.cash * self.max_allocation_per_trade)
+
+        if budget is not None:
+            available = budget
+        elif self._allocator is not None:
+            available = self._allocator.get_budget().options_available
+        else:
+            available = snapshot.cash * self.max_allocation_per_trade
 
         opportunities = self.scan()
-        executed = []
+        executed: list[dict] = []
+        committed = 0.0
 
-        for opp in opportunities[:max_trades]:
-            if opp.cash_required > available:
-                log.info("Skipping %s: needs $%.0f, have $%.0f", opp.candidate.symbol, opp.cash_required, available)
+        for opp in opportunities:
+            if len(executed) >= max_trades:
+                break
+
+            need = opp.cash_required
+            sym = opp.candidate.symbol
+
+            if committed + need > available:
+                log.info(
+                    "Skipping %s: needs $%.0f, $%.0f of $%.0f sleeve budget left",
+                    sym, need, available - committed, available,
+                )
+                continue
+
+            # Sleeve gate: does the options budget still have room for this?
+            if self._allocator is not None and not self._allocator.can_allocate_options(need):
+                log.info("Skipping %s: options sleeve budget exhausted", sym)
+                continue
+
+            # Per-trade and per-position gate.
+            if self._breaker is not None and not self._breaker.can_trade(sym, need):
+                log.info("Skipping %s: blocked by risk limits ($%.0f notional)", sym, need)
                 continue
 
             try:
                 order = self._client.trading.submit_order(
                     MarketOrderRequest(
-                        symbol=opp.candidate.symbol,
+                        symbol=sym,
                         qty=1,
                         side=OrderSide.SELL,
                         time_in_force=TimeInForce.DAY,
                     )
                 )
-                log.info("CSP order placed: %s at strike $%.2f", opp.candidate.symbol, opp.candidate.strike_price)
+                log.info(
+                    "CSP order placed: %s strike $%.2f, collateral $%.0f",
+                    sym, opp.candidate.strike_price, need,
+                )
                 self._tracker.record_trade(
-                    symbol=opp.candidate.symbol,
+                    symbol=sym,
                     side="sell_to_open",
                     qty=1,
                     price=opp.candidate.strike_price,
                     strategy="csp",
                 )
-                available -= opp.cash_required
+                committed += need
                 executed.append({
-                    "symbol": opp.candidate.symbol,
+                    "symbol": sym,
                     "strike": opp.candidate.strike_price,
                     "expiry": str(opp.candidate.expiration),
+                    "collateral": need,
                     "order_id": str(order.id),
                 })
             except Exception:
-                log.exception("Failed to place CSP order for %s", opp.candidate.symbol)
+                log.exception("Failed to place CSP order for %s", sym)
 
         return executed

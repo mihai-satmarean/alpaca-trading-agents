@@ -46,7 +46,10 @@ class OptionsIncomeAgent:
         self._breaker = breaker
         self._allocator = allocator
 
-        self._csp = CashSecuredPutStrategy(self._alpaca, self._chain, data, tracker)
+        self._csp = CashSecuredPutStrategy(
+            self._alpaca, self._chain, data, tracker,
+            allocator=allocator, breaker=breaker,
+        )
         self._cc = CoveredCallStrategy(self._alpaca, self._chain, data, tracker)
 
     def run_cycle(self) -> dict:

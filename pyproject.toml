@@ -17,6 +17,7 @@ dependencies = [
     "websockets>=12.0",
     "plotly>=5.22",
     "yfinance>=0.2.40",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

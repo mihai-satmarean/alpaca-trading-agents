@@ -22,10 +22,16 @@ fi
 echo "1) Tailscale"
 if command -v tailscale >/dev/null 2>&1; then TS=tailscale; else TS=/Applications/Tailscale.app/Contents/MacOS/Tailscale; fi
 if "$TS" status >/dev/null 2>&1; then
-  peers=$("$TS" status 2>/dev/null | grep -c . || echo 0)
+  # Capture once. Piping into `grep -q` under `set -o pipefail` reports failure
+  # even on a match: grep exits at the first hit, the writer takes SIGPIPE, and
+  # pipefail surfaces the writer's 141 as the pipeline status.
+  ts_status="$("$TS" status 2>/dev/null || true)"
+  peers="$(printf '%s\n' "$ts_status" | grep -c . || true)"
   echo "   connected ($peers node(s) visible)"
-  "$TS" status 2>/dev/null | grep -q "100.69.81.102" \
-    || echo "   WARNING: the LLM node 100.69.81.102 is not a peer -- you are probably on the wrong tailnet"
+  case "$ts_status" in
+    *100.69.81.102*) echo "   dell4 (100.69.81.102) is a visible peer" ;;
+    *) echo "   WARNING: the LLM node 100.69.81.102 is not a peer -- wrong tailnet?" ;;
+  esac
 else
   echo "   NOT connected -- open Tailscale and sign in"; exit 1
 fi

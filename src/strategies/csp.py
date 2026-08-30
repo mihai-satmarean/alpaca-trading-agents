@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from alpaca.trading.requests import MarketOrderRequest
@@ -12,6 +13,7 @@ from src.core.alpaca_client import AlpacaClient
 from src.core.options_chain import OptionsChain, OptionCandidate
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
+from src.strategies.csp_scoring import QuotedPut, ScoringConfig, rank
 
 log = logging.getLogger(__name__)
 
@@ -48,6 +50,8 @@ class CashSecuredPutStrategy:
         max_otm_pct: float = 0.08,
         min_open_interest: int = 100,
         max_allocation_per_trade: float = 0.10,
+        max_delta: float = -0.30,
+        quote_provider: Callable[[list[str]], dict[str, dict]] | None = None,
     ):
         self._client = client
         self._chain = chain
@@ -59,46 +63,85 @@ class CashSecuredPutStrategy:
         self.max_otm_pct = max_otm_pct
         self.min_open_interest = min_open_interest
         self.max_allocation_per_trade = max_allocation_per_trade
+        self.max_delta = max_delta
+        self._quote_provider = quote_provider
 
     def scan(self, symbols: list[str] | None = None) -> list[CSPOpportunity]:
-        """Scan multiple symbols for CSP opportunities and return scored list."""
+        """Scan for sellable puts, priced on what each contract actually bids.
+
+        The previous implementation derived premium as
+        `underlying_price * min_premium_pct`, which never read the contract and,
+        because it divided by strike, ranked cheaper far-OTM puts highest. It
+        also meant the strategy sold puts without knowing what they paid.
+
+        Without a quote provider this returns nothing. Refusing to trade is the
+        only safe response to not knowing the price; the old code's answer was
+        to invent one.
+        """
         symbols = symbols or CSP_SYMBOLS
+
+        if self._quote_provider is None:
+            log.error("No option quote provider configured; refusing to scan CSPs")
+            return []
+
+        cfg = ScoringConfig(
+            min_premium_pct=self.min_premium_pct,
+            min_open_interest=self.min_open_interest,
+            max_delta=getattr(self, "max_delta", -0.30),
+            min_dte=self.min_dte,
+            max_dte=self.max_dte,
+        )
+
         opportunities: list[CSPOpportunity] = []
 
         for sym in symbols:
             quote = self._data.get_latest_quote(sym)
             if not quote:
-                log.warning("No quote for %s, skipping", sym)
+                log.warning("No underlying quote for %s, skipping", sym)
                 continue
 
-            puts = self._chain.get_puts(
-                underlying=sym,
-                min_dte=self.min_dte,
-                max_dte=self.max_dte,
-            )
-
+            puts = self._chain.get_puts(sym, min_dte=self.min_dte, max_dte=self.max_dte)
             puts = self._chain.filter_by_otm_pct(puts, quote.mid, self.max_otm_pct)
-            puts = self._chain.filter_by_open_interest(puts, self.min_open_interest)
-            puts = self._chain.select_best_expiry(puts, target_dte=30)
+            if not puts:
+                continue
 
+            try:
+                quotes = self._quote_provider([p.symbol for p in puts])
+            except Exception:
+                log.exception("Option quote fetch failed for %s; skipping", sym)
+                continue
+
+            quoted: list[QuotedPut] = []
             for p in puts:
-                cash_required = p.strike_price * 100
-                estimated_premium = quote.mid * self.min_premium_pct
-                premium_pct = estimated_premium / p.strike_price if p.strike_price else 0
-                annualized = (premium_pct / p.days_to_expiry * 365) if p.days_to_expiry > 0 else 0
+                q = quotes.get(p.symbol)
+                if not q:
+                    continue
+                quoted.append(QuotedPut(
+                    symbol=p.symbol,
+                    strike=float(p.strike_price),
+                    days_to_expiry=p.days_to_expiry,
+                    bid=float(q.get("bid") or 0.0),
+                    ask=float(q.get("ask") or 0.0),
+                    open_interest=int(p.open_interest or 0),
+                    delta=q.get("delta"),
+                ))
 
-                score = self._score(premium_pct, annualized, p.days_to_expiry, p.open_interest or 0)
+            if not quoted:
+                log.info("No priced contracts for %s", sym)
+                continue
 
-                opportunities.append(
-                    CSPOpportunity(
-                        candidate=p,
-                        current_price=quote.mid,
-                        cash_required=cash_required,
-                        premium_pct=premium_pct,
-                        annualized_return=annualized,
-                        score=score,
-                    )
-                )
+            for ev in rank(quoted, cfg):
+                match = next((p for p in puts if p.symbol == ev.put.symbol), None)
+                if match is None:
+                    continue
+                opportunities.append(CSPOpportunity(
+                    candidate=match,
+                    current_price=quote.mid,
+                    cash_required=ev.collateral,
+                    premium_pct=ev.return_on_capital,
+                    annualized_return=ev.annualized,
+                    score=ev.score,
+                ))
 
         opportunities.sort(key=lambda o: o.score, reverse=True)
         return opportunities

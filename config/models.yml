@@ -1,0 +1,28 @@
+litellm_proxy:
+  base_url: "http://100.69.81.102:4000/v1"
+
+models:
+  primary_coder:
+    name: dell4-devstral
+    description: "Devstral-Small-2-24B -- primary coding, complex reasoning"
+    context_window: 131072
+
+  reviewer:
+    name: dell4-coder
+    description: "Qwen3-Coder-30B -- code review, fast iterations"
+    context_window: 262144
+
+  reasoning:
+    name: dell4-chat
+    description: "Qwen3.6-35B -- general reasoning, analysis"
+    context_window: 131072
+
+  fast:
+    name: dell4-fast
+    description: "Qwen3.5-9B -- quick classification, routing"
+    context_window: 131072
+
+  embedding:
+    name: dell4-embed
+    description: "Qwen3-Embedding-8B -- vector embeddings"
+    context_window: 8192

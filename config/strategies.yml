@@ -1,0 +1,47 @@
+allocation:
+  options_pct: 0.80
+  vampire_pct: 0.15
+  reserve_pct: 0.05
+
+vampire:
+  symbols:
+    - SPY
+    - QQQ
+    - AAPL
+  tick_threshold: 0.02
+  position_size: 10
+  max_position: 100
+  bleed_window_seconds: 5
+  reference_type: vwap
+  max_daily_loss: 50.0
+  max_trades_per_min: 20
+
+options:
+  symbols:
+    - SPY
+    - QQQ
+    - AAPL
+    - MSFT
+    - AMZN
+    - NVDA
+    - META
+    - GOOGL
+  csp:
+    min_premium_pct: 0.005
+    max_days_to_expiry: 45
+    min_days_to_expiry: 7
+    max_delta: -0.30
+    min_open_interest: 100
+  covered_call:
+    min_premium_pct: 0.003
+    max_days_to_expiry: 30
+    min_days_to_expiry: 7
+    min_delta: 0.20
+    max_delta: 0.35
+
+risk:
+  max_daily_loss_pct: 0.02
+  max_position_pct: 0.10
+  max_single_trade_pct: 0.05
+  min_cash_reserve: 5000.0
+  circuit_breaker_cooldown_minutes: 30

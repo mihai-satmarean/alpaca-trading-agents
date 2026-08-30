@@ -44,24 +44,23 @@ source scripts/dell4-env.sh
 
 ## 4. Claude Code against the Dell4 cluster
 
-`.claude/settings.local.json` in this repo points Claude Code at the cluster.
-It is **project-scoped on purpose** — sessions started in any other directory
-keep using the normal Anthropic API. Do not move these into
-`~/.claude/settings.json`.
+The Dell4 env vars live in `.claude/settings.local.json`, **project-scoped on
+purpose** — sessions started in any other directory keep using the normal
+Anthropic API. Do not move these into `~/.claude/settings.json`.
 
-```json
-{
-  "env": {
-    "ANTHROPIC_BASE_URL": "http://100.69.81.102:4000",
-    "ANTHROPIC_AUTH_TOKEN": "<litellm key>",
-    "ANTHROPIC_API_KEY": "<litellm key>",
-    "ANTHROPIC_MODEL": "dell4-coder",
-    "ANTHROPIC_SMALL_FAST_MODEL": "dell4-coder"
-  }
-}
+Pointing Claude Code at the cluster while the VPN is down makes it fail in this
+repo, so the config ships **parked** at `.claude/settings.dell4.json` and is
+activated by a toggle that first checks the proxy actually answers:
+
+```bash
+./scripts/use-dell4.sh          # report current state
+./scripts/use-dell4.sh on       # -> Dell4 (refuses if the proxy is unreachable)
+./scripts/use-dell4.sh off      # -> back to the normal Anthropic API
 ```
 
-Model choice for Claude Code:
+Restart any Claude Code session in this repo after toggling.
+
+Model choice:
 
 | Model | Notes |
 |---|---|
@@ -69,6 +68,19 @@ Model choice for Claude Code:
 | `dell4-devstral-cc` | Devstral-24B. Higher accuracy (~68% vs ~50% SWE-bench). Use the **`-cc` alias**, which reorders messages for Claude Code; the bare `dell4-devstral` returns 400s. |
 | `dell4-chat` | Qwen3.6-35B, general reasoning. |
 | `dell4-fast` | Qwen3.5-9B. OpenAI-compatible clients only. |
+
+### Joining the right tailnet
+
+If your Tailscale account already has its own tailnet, the macOS client binds
+the device to **your own** tailnet, not the one you were invited to. Accepting
+the invite adds your *account*; it does not move the *device*. The console
+tailnet switcher and logout/login do not change this, and `--auth-key` is the
+only flag that targets a specific tailnet. Symptom: `tailscale status` shows
+only your own node and `tailscale ping 100.69.81.102` says `no matching peer`.
+
+Fix, from the tailnet admin: an auth key generated in *their* tailnet
+(`tailscale up --auth-key=tskey-...`), or **Share…** on the LLM node from their
+Machines page.
 
 ## 5. Verify the whole path
 

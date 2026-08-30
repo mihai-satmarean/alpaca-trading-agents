@@ -121,3 +121,6 @@ class AlpacaClient:
 
     def cancel_all_orders(self):
         return self.trading.cancel_orders()
+
+    def get_clock(self):
+        return self.trading.get_clock()

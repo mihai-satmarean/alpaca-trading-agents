@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService
@@ -21,6 +22,7 @@ from src.risk.allocation import AllocationManager, AllocationConfig
 from src.agents.options_income import OptionsIncomeAgent
 from src.agents.vampire import VampireAgent
 from src.agents.risk_manager import RiskManagerAgent
+from src.agents.sixfold_analyst import SixfoldAnalystAgent
 
 log = logging.getLogger(__name__)
 
@@ -61,12 +63,30 @@ class Coordinator:
             self._client, self._tracker, self._breaker, self._allocator
         )
 
+        self._sixfold_agent = SixfoldAnalystAgent(
+            self._client,
+            universe=[
+                "SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN",
+                "NVDA", "META", "JPM", "V", "JNJ", "UNH",
+                "PG", "HD", "COST", "ABBV", "LLY", "MRK",
+            ],
+        )
+
         self._running = False
 
     def status(self) -> dict:
         snapshot = self._tracker.get_snapshot()
         budget = self._allocator.get_budget()
         risk_report = self._risk_agent.check()
+
+        sixfold_summary = {}
+        if self._sixfold_agent.last_scan:
+            buy_candidates = self._sixfold_agent.get_buy_candidates()
+            sixfold_summary = {
+                "last_scan": self._sixfold_agent.last_scan.isoformat(),
+                "buy_candidates": buy_candidates,
+                "total_scored": len(self._sixfold_agent.scores),
+            }
 
         return {
             "timestamp": datetime.now().isoformat(),
@@ -84,6 +104,7 @@ class Coordinator:
             },
             "vampire_status": self._vampire_agent.get_status(),
             "risk": risk_report,
+            "sixfold": sixfold_summary,
         }
 
     def start(self):
@@ -95,6 +116,9 @@ class Coordinator:
 
         self._running = True
         self._setup_signal_handlers()
+
+        sixfold_thread = threading.Thread(target=self._sixfold_agent.run_loop, daemon=True)
+        sixfold_thread.start()
 
         risk_thread = threading.Thread(target=self._risk_agent.run_loop, daemon=True)
         risk_thread.start()
@@ -109,16 +133,25 @@ class Coordinator:
         )
         vampire_thread.start()
 
-        log.info("All agents started. Entering coordination loop.")
+        log.info("All agents started (including SIXFOLD analyst). Entering coordination loop.")
         self._coordination_loop()
+
+    def _is_market_open(self) -> bool:
+        try:
+            clock = self._client.get_clock()
+            return clock.is_open
+        except Exception:
+            now = datetime.now(ZoneInfo("America/New_York"))
+            if now.weekday() >= 5:
+                return False
+            t = now.time()
+            return dt_time(9, 30) <= t <= dt_time(16, 0)
 
     def _coordination_loop(self):
         while self._running:
             try:
-                now = datetime.now().time()
-
-                if now < dt_time(9, 30) or now > dt_time(16, 5):
-                    log.debug("Outside market hours, sleeping")
+                if not self._is_market_open():
+                    log.debug("Market closed, sleeping")
                     time.sleep(60)
                     continue
 
@@ -150,6 +183,7 @@ class Coordinator:
     def stop(self):
         log.info("=== Shutting down trading system ===")
         self._running = False
+        self._sixfold_agent.stop()
         self._vampire_agent.stop_all()
         try:
             self._client.cancel_all_orders()

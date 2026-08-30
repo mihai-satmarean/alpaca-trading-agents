@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService
@@ -38,15 +39,15 @@ class OptionsIncomeAgent:
         breaker: CircuitBreaker,
         allocator: AllocationManager,
     ):
-        self._client = client
-        self._chain = OptionsChain(client)
+        self._alpaca = client
+        self._chain = OptionsChain(self._alpaca)
         self._data = data
         self._tracker = tracker
         self._breaker = breaker
         self._allocator = allocator
 
-        self._csp = CashSecuredPutStrategy(client, self._chain, data, tracker)
-        self._cc = CoveredCallStrategy(client, self._chain, data, tracker)
+        self._csp = CashSecuredPutStrategy(self._alpaca, self._chain, data, tracker)
+        self._cc = CoveredCallStrategy(self._alpaca, self._chain, data, tracker)
 
     def run_cycle(self) -> dict:
         """Execute one scan-and-trade cycle. Returns summary of actions taken."""
@@ -74,17 +75,26 @@ class OptionsIncomeAgent:
         )
         return results
 
+    def _is_market_open(self) -> bool:
+        try:
+            clock = self._alpaca.get_clock()
+            return clock.is_open
+        except Exception:
+            now = datetime.now(ZoneInfo("America/New_York"))
+            if now.weekday() >= 5:
+                return False
+            return dt_time(9, 35) <= now.time() <= dt_time(15, 30)
+
     def run_loop(self):
         """Blocking loop that runs cycles during market hours."""
         log.info("Options Income Agent started")
         while True:
-            now = datetime.now().time()
-            if dt_time(9, 35) <= now <= dt_time(15, 30):
+            if self._is_market_open():
                 try:
                     self.run_cycle()
                 except Exception:
                     log.exception("Options cycle failed")
             else:
-                log.debug("Outside market hours, sleeping")
+                log.debug("Market closed, sleeping")
 
             time.sleep(SCAN_INTERVAL)

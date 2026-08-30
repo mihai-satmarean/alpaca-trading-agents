@@ -6,7 +6,7 @@ import asyncio
 import logging
 
 from src.core.alpaca_client import AlpacaClient
-from src.core.market_data import MarketDataService
+from src.core.market_data import MarketDataService, Quote
 from src.core.position_tracker import PositionTracker
 from src.strategies.vampire_engine import VampireEngine, VampireConfig, VampireState
 from src.risk.circuit_breakers import CircuitBreaker
@@ -18,8 +18,8 @@ log = logging.getLogger(__name__)
 class VampireAgent:
     """Manages one or more VampireEngine instances across symbols.
 
-    Each engine runs on a single symbol via WebSocket streaming.
-    The agent checks risk/allocation gates before allowing the engines to trade.
+    Uses a single shared WebSocket stream and dispatches quotes
+    to the appropriate engine by symbol.
     """
 
     def __init__(
@@ -58,7 +58,7 @@ class VampireAgent:
         return status
 
     async def run(self):
-        """Start all vampire engines concurrently."""
+        """Subscribe all symbols on one stream and dispatch to engines."""
         if not self._breaker.check():
             log.warning("Circuit breaker active, vampire agent not starting")
             return
@@ -68,9 +68,18 @@ class VampireAgent:
             log.warning("Insufficient vampire budget ($%.0f), not starting", budget.vampire_available)
             return
 
-        log.info("Vampire Agent starting with %d symbols", len(self._engines))
-        tasks = [engine.run() for engine in self._engines.values()]
-        await asyncio.gather(*tasks, return_exceptions=True)
+        all_symbols = list(self._engines.keys())
+        log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)
+
+        async def on_quote(quote: Quote):
+            engine = self._engines.get(quote.symbol)
+            if engine:
+                vwap = self._data.get_vwap(quote.symbol, engine.cfg.bleed_window_seconds)
+                engine.tick(quote.mid, vwap)
+
+        await self._data.subscribe_quotes(all_symbols, on_quote)
+        await self._data.subscribe_trades(all_symbols, lambda _: asyncio.sleep(0))
+        await self._data.run_stream()
 
     def stop_all(self):
         for sym, engine in self._engines.items():

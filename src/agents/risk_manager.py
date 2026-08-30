@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from datetime import datetime, time as dt_time
+from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.position_tracker import PositionTracker
@@ -33,7 +34,7 @@ class RiskManagerAgent:
         breaker: CircuitBreaker,
         allocator: AllocationManager,
     ):
-        self._client = client
+        self._alpaca = client
         self._tracker = tracker
         self._breaker = breaker
         self._allocator = allocator
@@ -83,16 +84,24 @@ class RiskManagerAgent:
         return report
 
     def should_flatten_eod(self) -> bool:
-        """Check if it's time to flatten all positions before market close."""
-        now = datetime.now().time()
-        return now >= dt_time(15, 50)
+        try:
+            clock = self._alpaca.get_clock()
+            if not clock.is_open:
+                return False
+            now_et = datetime.now(ZoneInfo("America/New_York")).time()
+            return now_et >= dt_time(15, 50)
+        except Exception:
+            now = datetime.now(ZoneInfo("America/New_York"))
+            if now.weekday() >= 5:
+                return False
+            return now.time() >= dt_time(15, 50)
 
     def flatten_all(self):
         """Emergency flatten: close all positions and cancel all orders."""
         log.warning("RISK MANAGER: Flattening all positions")
         try:
-            self._client.cancel_all_orders()
-            self._client.close_all_positions()
+            self._alpaca.cancel_all_orders()
+            self._alpaca.close_all_positions()
             self._alerts.append({
                 "level": "critical",
                 "message": "All positions flattened",

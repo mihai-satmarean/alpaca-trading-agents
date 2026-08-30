@@ -14,6 +14,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time
 from enum import Enum
+from zoneinfo import ZoneInfo
 
 from alpaca.trading.enums import OrderSide, TimeInForce
 
@@ -93,7 +94,7 @@ class VampireEngine:
         return list(self._bleeds)
 
     def _is_market_hours(self) -> bool:
-        now = datetime.now().time()
+        now = datetime.now(ZoneInfo("America/New_York")).time()
         return SESSION_START <= now <= SESSION_END
 
     def _check_rate_limit(self) -> bool:
@@ -223,14 +224,5 @@ class VampireEngine:
         if self._state == VampireState.STOPPED:
             self._state = VampireState.IDLE
 
-    async def run(self):
-        """Main loop: subscribe to real-time quotes and feed ticks to the engine."""
-        log.info("Vampire starting on %s (threshold=%.3f)", self.cfg.symbol, self.cfg.tick_threshold)
-
-        async def on_quote(quote: Quote):
-            vwap = self._data.get_vwap(quote.symbol, self.cfg.bleed_window_seconds)
-            self.tick(quote.mid, vwap)
-
-        await self._data.subscribe_quotes([self.cfg.symbol], on_quote)
-        await self._data.subscribe_trades([self.cfg.symbol], lambda _: asyncio.sleep(0))
-        await self._data.run_stream()
+    def start(self):
+        log.info("Vampire engine ready on %s (threshold=%.3f)", self.cfg.symbol, self.cfg.tick_threshold)

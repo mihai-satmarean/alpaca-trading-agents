@@ -42,30 +42,54 @@ Load it into your shell with:
 source scripts/dell4-env.sh
 ```
 
-## 4. Claude Code against the Dell4 cluster
+## 4. Claude Code: which model runs where
 
-The Dell4 env vars live in `.claude/settings.local.json`, **project-scoped on
-purpose** — sessions started in any other directory keep using the normal
-Anthropic API. Do not move these into `~/.claude/settings.json`.
+Two models, split by the kind of work, because they are not interchangeable.
 
-Pointing Claude Code at the cluster while the VPN is down makes it fail in this
-repo, so the config ships **parked** at `.claude/settings.dell4.json` and is
-activated by a toggle that first checks the proxy actually answers:
+**Opus stays the default everywhere, including inside this repo.** Diagnosis is
+where the cluster models are weakest, and it is where a wrong answer is most
+expensive: the defects fixed in #4, #7 and #8 were all cases where the code did
+something other than what it claimed, which is a class of bug you find by
+reading for actual behaviour rather than intent.
+
+**The cluster is opt-in per session**, via a shell function rather than a
+directory setting. Routing by directory means a session opened in this repo to
+debug something silently gets the weaker model. Opt-in inverts that: forgetting
+costs tokens instead of costing you a missed bug.
+
+Add to `~/.zshrc` (see `scripts/dell4-shell.zsh` in this repo):
 
 ```bash
-./scripts/use-dell4.sh          # report current state
-./scripts/use-dell4.sh on       # -> Dell4 (refuses if the proxy is unreachable)
-./scripts/use-dell4.sh off      # -> back to the normal Anthropic API
+claude                  # Opus, anywhere, including here
+dell4                   # Qwen3-Coder-30B on the cluster
+dell4-devstral          # Devstral-24B, better at multi-file edits, slower
 ```
 
-Restart any Claude Code session in this repo after toggling.
+`dell4` checks the proxy is reachable before launching and tells you to connect
+Tailscale if it is not, rather than failing inside the session.
 
-Model choice:
+| Work | Run it on |
+|---|---|
+| Root-causing behaviour, reading code for what it does | `claude` (Opus) |
+| Reviewing a diff for correctness | `claude` (Opus) |
+| Writing tests against an agreed spec | `dell4` |
+| MCP/CLI adapter, boilerplate, config plumbing | `dell4` |
+| Streamlit dashboard, presentation assets | `dell4` |
+| Multi-file refactor with a known shape | `dell4-devstral` |
+
+Subagents inherit the session's routing, so a `dell4` session dispatches
+subagents to the cluster and an Opus session dispatches them to Opus. There is
+no mixing within one session; use two terminals.
+
+`scripts/use-dell4.sh on` still exists to flip the whole directory to the
+cluster if you want that, but the shell function is the better default.
+
+### Model notes
 
 | Model | Notes |
 |---|---|
-| `dell4-coder` | Qwen3-Coder-30B. Works with Claude Code today. Fast, 256K context. |
-| `dell4-devstral-cc` | Devstral-24B. Higher accuracy (~68% vs ~50% SWE-bench). Use the **`-cc` alias**, which reorders messages for Claude Code; the bare `dell4-devstral` returns 400s. |
+| `dell4-coder` | Qwen3-Coder-30B, 3B active. Fast, 256K context. |
+| `dell4-devstral-cc` | Devstral-24B. ~68% SWE-bench vs ~50% for the coder model. Use the **`-cc` alias**; the bare name returns 400s under Claude Code. |
 | `dell4-chat` | Qwen3.6-35B, general reasoning. |
 | `dell4-fast` | Qwen3.5-9B. OpenAI-compatible clients only. |
 

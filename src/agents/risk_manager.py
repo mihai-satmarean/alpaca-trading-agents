@@ -7,13 +7,20 @@ import time
 from datetime import datetime, time as dt_time
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.config import get_config
 from src.core.position_tracker import PositionTracker
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
-from src.risk.allocation import AllocationManager
+from src.risk.allocation import AllocationManager, parse_occ
 
 log = logging.getLogger(__name__)
 
 CHECK_INTERVAL = 30  # seconds between risk checks
+
+# The intraday sleeve is flattened inside this window, once per session. The
+# options sleeve is deliberately excluded: it holds 7-45 DTE contracts whose
+# entire thesis is carrying them overnight to collect theta.
+EOD_FLATTEN_START = dt_time(15, 50)
+EOD_FLATTEN_END = dt_time(16, 0)
 
 
 class RiskManagerAgent:
@@ -38,6 +45,8 @@ class RiskManagerAgent:
         self._breaker = breaker
         self._allocator = allocator
         self._alerts: list[dict] = []
+        self._intraday_symbols = {s.upper() for s in get_config().vampire_symbols}
+        self._last_flatten_date = None
 
     @property
     def alerts(self) -> list[dict]:
@@ -83,23 +92,61 @@ class RiskManagerAgent:
         return report
 
     def should_flatten_eod(self) -> bool:
-        """Check if it's time to flatten all positions before market close."""
-        now = datetime.now().time()
-        return now >= dt_time(15, 50)
+        """True only inside the end-of-day window, and only once per session.
 
-    def flatten_all(self):
-        """Emergency flatten: close all positions and cancel all orders."""
-        log.warning("RISK MANAGER: Flattening all positions")
+        The previous form was `now >= 15:50`, which stays true until midnight.
+        Paired with an unconditional call every CHECK_INTERVAL seconds that
+        flattened the book roughly 980 times an evening.
+        """
+        now = datetime.now()
+        if not (EOD_FLATTEN_START <= now.time() <= EOD_FLATTEN_END):
+            return False
+        return self._last_flatten_date != now.date()
+
+    def flatten_intraday(self) -> list[str]:
+        """Close the intraday (vampire) sleeve only, leaving the options book.
+
+        The scalper must not carry overnight risk. The options income sleeve
+        must carry it, or it earns nothing: closing a 30-DTE put the same
+        afternoon it was opened forfeits all remaining theta and pays the
+        option spread twice for the privilege.
+        """
+        closed: list[str] = []
+        try:
+            self._client.cancel_all_orders()
+            for pos in self._client.get_positions():
+                symbol = str(pos.symbol).upper()
+                if parse_occ(symbol) is not None:
+                    continue  # options sleeve: hold
+                if symbol not in self._intraday_symbols:
+                    continue  # not ours to close
+                self._client.close_position(symbol)
+                closed.append(symbol)
+
+            self._last_flatten_date = datetime.now().date()
+            self._alerts.append({
+                "level": "info",
+                "message": f"Intraday sleeve flattened: {closed or 'nothing open'}",
+                "timestamp": datetime.now().isoformat(),
+            })
+            log.info("EOD: flattened intraday sleeve %s", closed or "(nothing open)")
+        except Exception:
+            log.exception("Intraday flatten failed")
+        return closed
+
+    def emergency_flatten_all(self):
+        """Close everything, including options. Reserved for a tripped breaker."""
+        log.warning("RISK MANAGER: emergency flatten of ALL positions")
         try:
             self._client.cancel_all_orders()
             self._client.close_all_positions()
             self._alerts.append({
                 "level": "critical",
-                "message": "All positions flattened",
+                "message": "All positions flattened (emergency)",
                 "timestamp": datetime.now().isoformat(),
             })
         except Exception:
-            log.exception("Flatten failed")
+            log.exception("Emergency flatten failed")
 
     def run_loop(self):
         """Blocking loop for continuous risk monitoring."""
@@ -111,7 +158,7 @@ class RiskManagerAgent:
                     log.warning("Trading halted: %s", report["alerts"])
 
                 if self.should_flatten_eod():
-                    self.flatten_all()
+                    self.flatten_intraday()
             except Exception:
                 log.exception("Risk check failed")
 

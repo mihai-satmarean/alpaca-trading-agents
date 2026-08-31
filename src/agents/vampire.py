@@ -79,6 +79,31 @@ class VampireAgent:
             except Exception:
                 log.warning("could not reconcile %s", sym, exc_info=True)
 
+    def _drop_unshortable(self) -> None:
+        """Refuse to run a bi-directional engine on a symbol that cannot be shorted.
+
+        The scalper trades both directions, so a symbol with no borrow can only
+        ever half-work: every short signal is refused by the venue and the engine
+        retries it. SOXL was selected on 2026-08-31 for its move-to-spread ratio
+        with no borrow check at all, and shipped that way.
+
+        Borrow is a property of the symbol, not of the strategy, and the venue
+        will state it on request. Asking once at startup costs one call per
+        symbol and removes a whole class of guaranteed refusal.
+        """
+        for sym in list(self._engines):
+            try:
+                asset = self._client.trading.get_asset(sym)
+            except Exception:
+                log.warning("could not read borrow status for %s; keeping it", sym)
+                continue
+            if not getattr(asset, "shortable", True):
+                log.error(
+                    "%s is not shortable; dropping it from the scalper "
+                    "(a bi-directional engine cannot run on it)", sym,
+                )
+                self._engines.pop(sym, None)
+
     def _apply_spread_thresholds(self) -> None:
         """Set each engine's trigger from its own spread, not a flat number.
 
@@ -200,6 +225,7 @@ class VampireAgent:
             return
 
         self._apply_sleeve_limits()
+        self._drop_unshortable()
         self._apply_spread_thresholds()
 
         all_symbols = list(self._engines.keys())

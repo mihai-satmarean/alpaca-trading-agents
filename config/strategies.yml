@@ -76,7 +76,9 @@ vampire:
   symbols:
     - HOOD
     - TQQQ
-    - SOXL
+    # - SOXL   # removed 2026-08-31: shortable=false, easy_to_borrow=false.
+    #            A bi-directional scalper cannot run on a name with no borrow;
+    #            every short signal is a guaranteed venue refusal.
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

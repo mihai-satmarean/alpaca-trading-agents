@@ -7,7 +7,15 @@ left its counter at zero, and bought again on the next tick while every one of
 those orders filled. That is how AAPL reached 271 shares against a 21-share cap.
 
 The rule this encodes: an unknown fill must be assumed FILLED. Under-counting
-accumulates without bound; over-counting only makes the engine trade less.
+accumulates without bound.
+
+CORRECTION, 2026-08-31 afternoon. This docstring originally justified the rule
+with "over-counting only makes the engine trade less." That is true only while
+opening a position. While closing one it is false and dangerous: an over-stated
+position asks the venue to buy back more than exists, the venue refuses, and no
+retry makes the extra share appear. It produced 4,700 refused orders in 29
+minutes and rate-limited the account. Over-counting is bounded on entry and a
+deadlock on exit. See tests/test_vampire_reject_recovery.py.
 """
 
 from __future__ import annotations

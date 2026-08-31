@@ -122,8 +122,15 @@ class SixfoldExecutor:
                 self._reject(sym, "blocked by portfolio risk limits")
                 continue
 
-            score = getattr(self._analyst, "scores", {}).get(sym, {})
-            composite = score.get("composite", 0) if isinstance(score, dict) else 0
+            # SixfoldScore is a dataclass whose field is composite_score; the
+            # previous dict-style read silently produced 0.0 for every real
+            # call, so each advisor was told the quant system scored the name
+            # 0/100 while recommending it, which invites a veto of everything.
+            try:
+                score_obj = self._analyst.scores.get(sym)
+            except Exception:
+                score_obj = None
+            composite = float(getattr(score_obj, "composite_score", 0.0) or 0.0)
             council = evaluate_equity_buy(sym, composite)
             if not council.approved:
                 reasons = "; ".join(

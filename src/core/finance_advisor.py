@@ -98,17 +98,38 @@ def _llm_call(model: str, system: str, user: str,
     return payload["choices"][0]["message"]["content"].strip()
 
 
+_APPROVE_NEGATIONS = ("NOT APPROVE", "N'T APPROVE", "CANNOT APPROVE",
+                      "NEVER APPROVE", "WOULD NOT APPROVE", "DO NOT APPROVE")
+
+
 def _parse_verdict(text: str, approve_word: str, reject_word: str) -> str:
+    """Strict-polarity parse of an advisor's verdict.
+
+    Two rules, both learned the expensive way today:
+
+    Ambiguity is an ABSTENTION, never an approval. An unparseable answer that
+    counts as approve silently neutralises the gate while the log shows a vote
+    that was never cast; abstaining is honest and simply reduces quorum, which
+    falls back to the deterministic signal.
+
+    In the substring phase REJECT is checked FIRST. "I would NOT APPROVE this"
+    contains APPROVE, so approve-first parsing inverts an explicit negative.
+    Errors in the reject direction only skip one buy, which is the cheap
+    direction for a veto gate to be wrong in.
+    """
     upper = text.upper()
-    if upper.startswith(approve_word.upper()):
-        return "approve"
+    head = upper[:80]
     if upper.startswith(reject_word.upper()):
         return "reject"
-    if approve_word.upper() in upper[:60]:
+    if upper.startswith(approve_word.upper()):
         return "approve"
-    if reject_word.upper() in upper[:60]:
+    if reject_word.upper() in head:
         return "reject"
-    return "approve"  # ambiguous response treated as weak approval
+    if approve_word.upper() in head:
+        if any(neg in head for neg in _APPROVE_NEGATIONS):
+            return "abstain"
+        return "approve"
+    return "abstain"
 
 
 def _query_advisor(model: str, role: str, system: str, prompt: str,
@@ -134,6 +155,8 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
     """Query all council members in parallel and tally votes."""
     opinions: list[AdvisorOpinion] = []
 
+    wall_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "25")) + 10
+
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {}
         for model, role in COUNCIL_MODELS:
@@ -142,8 +165,24 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
                               approve_word, reject_word)
             futures[fut] = role
 
-        for fut in as_completed(futures, timeout=35):
-            opinions.append(fut.result())
+        done: set = set()
+        try:
+            for fut in as_completed(futures, timeout=wall_timeout):
+                opinions.append(fut.result())
+                done.add(fut)
+        except TimeoutError:
+            # An advisor overrunning the wall must cost an abstention, not the
+            # cycle: an uncaught TimeoutError here propagates into run_cycle and
+            # kills every remaining candidate, which is precisely the "AI
+            # failure blocks trading" this council promises not to cause.
+            for fut, role in futures.items():
+                if fut not in done:
+                    fut.cancel()
+                    opinions.append(AdvisorOpinion(
+                        model="", role=role, verdict="abstain",
+                        reasoning="advisor exceeded the council wall timeout",
+                        responded=False,
+                    ))
 
     votes_for = sum(1 for o in opinions if o.verdict == "approve")
     votes_against = sum(1 for o in opinions if o.verdict == "reject")

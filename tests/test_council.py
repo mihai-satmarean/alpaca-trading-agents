@@ -35,8 +35,25 @@ class TestParseVerdict:
     def test_reject_within_first_60_chars(self):
         assert _parse_verdict("Given the risks, I REJECT this proposal.", "APPROVE", "REJECT") == "reject"
 
-    def test_ambiguous_defaults_to_approve(self):
-        assert _parse_verdict("The stock looks interesting but uncertain.", "APPROVE", "REJECT") == "approve"
+    def test_ambiguous_is_an_abstention_not_an_approval(self):
+        """Changed in review. An unparseable answer counted as approve
+        neutralises the gate while logging a vote that was never cast;
+        abstaining reduces quorum, which falls back to the deterministic
+        signal honestly."""
+        assert _parse_verdict("The stock looks interesting but uncertain.", "APPROVE", "REJECT") == "abstain"
+
+    def test_an_explicit_negative_is_never_an_approval(self):
+        """'NOT APPROVE' contains APPROVE, and approve-first substring parsing
+        inverted it into a yes vote."""
+        for text in ("I would NOT APPROVE this trade given the leverage.",
+                     "I cannot approve this purchase.",
+                     "Do not approve: the balance sheet is deteriorating."):
+            assert _parse_verdict(text, "APPROVE", "REJECT") != "approve"
+
+    def test_reject_wins_the_substring_phase(self):
+        """A sentence carrying both words is a rejection: errors in the reject
+        direction only skip one buy, the cheap direction for a veto gate."""
+        assert _parse_verdict("Hard to approve; overall I REJECT it.", "APPROVE", "REJECT") == "reject"
 
     def test_case_insensitive(self):
         assert _parse_verdict("approve. Looks good.", "APPROVE", "REJECT") == "approve"
@@ -170,3 +187,45 @@ class TestEvaluateCSP:
         assert isinstance(result, CouncilDecision)
         assert result.action == "sell_put"
         assert result.symbol == "SOFI"
+
+
+
+class TestWallTimeoutIsContained:
+    """An advisor overrunning the wall must cost an abstention, not the cycle."""
+
+    def test_timeout_backfills_abstentions_and_falls_back(self):
+        from unittest.mock import patch
+        from src.core import finance_advisor as fa
+
+        with patch.object(fa, "as_completed", side_effect=TimeoutError):
+            d = fa._run_council("buy", "JPM", {"default": "x"}, "prompt")
+        assert d.approved, "quorum 0 must fall back to the deterministic signal"
+        assert d.abstentions == 3
+        assert all(not o.responded for o in d.opinions)
+        assert "quorum" in d.summary.lower() or "deterministic" in d.summary.lower()
+
+
+class TestExecutorPassesTheRealScore:
+    def test_council_receives_composite_score_not_zero(self):
+        from unittest.mock import MagicMock, patch
+        from src.strategies.sixfold_executor import SixfoldExecutor
+
+        client, data, tracker, breaker, allocator, analyst = (MagicMock() for _ in range(6))
+        data.get_latest_quote.return_value = MagicMock(mid=200.0)
+        tracker.get_snapshot.return_value = MagicMock(equity=100_000.0, positions={})
+        allocator.get_budget.return_value = MagicMock(sixfold_budget=50_000.0)
+        breaker.check.return_value = True
+        breaker.can_trade.return_value = True
+        breaker.limits = MagicMock(max_single_trade_pct=0.05)
+        analyst.get_buy_candidates.return_value = ["JPM"]
+        analyst.scores = {"JPM": MagicMock(composite_score=78.5)}
+
+        ex = SixfoldExecutor(client, data, tracker, breaker, allocator, analyst,
+                             excluded=set())
+        with patch("src.strategies.sixfold_executor.evaluate_equity_buy") as council:
+            council.return_value = MagicMock(approved=True, opinions=[],
+                                             summary="approved")
+            ex.run_cycle()
+        council.assert_called_once()
+        assert council.call_args[0] == ("JPM", 78.5), \
+            "the dict-style read passed 0.0 for every real SixfoldScore"

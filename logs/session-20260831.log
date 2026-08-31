@@ -4401,3 +4401,96 @@ Traceback (most recent call last):
     excluded=set(cfg.vampire_symbols or []),
                  ^^^
 NameError: name 'cfg' is not defined
+10:52:25 INFO src.agents.options_income: MCP quote source ready (72 tools)
+10:52:25 INFO run_live: next report MIDDAY at 12:00 ET (in 68 min)
+10:52:25 INFO run_live: market open — starting agents
+10:52:26 WARNING src.agents.narrator: narration unavailable
+Traceback (most recent call last):
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/narrator.py", line 141, in _run
+    text = _chat(system, user)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/narrator.py", line 133, in _chat
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 404: Not Found
+10:52:26 INFO run_live: narration unavailable; reporting numbers only
+10:52:26 INFO run_live: reported: equity 100241.63 daily 0.00
+10:52:26 INFO src.agents.coordinator: === ProductAdvisors Trading System Starting ===
+10:52:26 INFO src.agents.coordinator: Account equity: $100241.63 | Cash: $100383.63
+10:52:26 INFO src.agents.sixfold_analyst: SIXFOLD Analyst agent starting
+10:52:26 INFO src.agents.risk_manager: Risk Manager Agent started
+10:52:26 INFO src.agents.sixfold_analyst: SIXFOLD scan starting for 18 symbols
+10:52:26 INFO src.agents.options_income: Options Income Agent started
+10:52:26 INFO src.agents.coordinator: All agents started (including SIXFOLD analyst). Entering coordination loop.
+10:52:26 INFO src.core.financial_data: Fetching fundamentals for SPY
+10:52:26 WARNING src.agents.vampire: Vampire allocation is zero; agent will not start
+10:52:27 INFO src.agents.coordinator: Rebalancing allocations
+10:52:27 INFO src.agents.coordinator: Options: $3000/$20048 | Vampire: $0/$0
+10:52:27 INFO src.agents.coordinator: Status: equity=$100242 pnl=$0 trades=0 positions=2
+10:52:27 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+10:52:28 INFO src.strategies.csp: CSP order placed: MARA260911P00010000 strike $10.00, collateral $1000
+10:52:28 INFO src.core.financial_data: Fetching fundamentals for QQQ
+10:52:28 INFO src.strategies.csp: CSP order placed: MARA260918P00010000 strike $10.00, collateral $1000
+10:52:28 INFO src.agents.options_income: Options cycle complete: 2 CSP, 0 CC trades
+10:52:29 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+10:52:29 INFO src.core.financial_data: Fetching fundamentals for AAPL
+10:52:30 INFO src.core.financial_data: Fetching fundamentals for MSFT
+10:52:31 INFO src.core.financial_data: Fetching fundamentals for GOOGL
+10:52:32 INFO src.core.financial_data: Fetching fundamentals for AMZN
+10:52:34 INFO src.core.financial_data: Fetching fundamentals for NVDA
+10:52:35 INFO src.core.financial_data: Fetching fundamentals for META
+10:52:36 INFO src.core.financial_data: Fetching fundamentals for JPM
+10:52:37 INFO src.core.financial_data: Fetching fundamentals for V
+10:52:38 INFO src.core.financial_data: Fetching fundamentals for JNJ
+10:52:39 INFO src.core.financial_data: Fetching fundamentals for UNH
+10:52:40 INFO src.core.financial_data: Fetching fundamentals for PG
+10:52:41 INFO src.core.financial_data: Fetching fundamentals for HD
+10:52:42 INFO src.core.financial_data: Fetching fundamentals for COST
+10:52:43 INFO src.core.financial_data: Fetching fundamentals for ABBV
+10:52:44 INFO src.core.financial_data: Fetching fundamentals for LLY
+10:52:45 INFO src.core.financial_data: Fetching fundamentals for MRK
+10:52:46 INFO src.agents.sixfold_analyst: SIXFOLD scan complete: 18 scored, 8 buy candidates
+10:52:46 INFO src.agents.sixfold_analyst:   NVDA: 78.5 (screening)
+10:52:46 INFO src.agents.sixfold_analyst:   MSFT: 77.6 (screening)
+10:52:46 INFO src.agents.sixfold_analyst:   GOOGL: 77.4 (screening)
+10:52:46 INFO src.agents.sixfold_analyst:   PG: 72.3 (screening)
+10:52:46 INFO src.agents.sixfold_analyst:   META: 70.7 (screening)
+10:57:29 INFO src.strategies.csp: CSP order placed: MARA260911P00010000 strike $10.00, collateral $1000
+10:57:30 INFO src.strategies.csp: CSP order placed: RIVN260911P00016000 strike $16.00, collateral $1600
+10:57:30 INFO src.agents.options_income: Options cycle complete: 2 CSP, 0 CC trades
+11:01:28 INFO src.agents.coordinator: Signal 15 received, shutting down
+11:01:28 INFO src.agents.coordinator: === Shutting down trading system ===
+Traceback (most recent call last):
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/scripts/run_live.py", line 208, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/scripts/run_live.py", line 203, in main
+    coord.start()   # blocks in the coordination loop
+    ^^^^^^^^^^^^^
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/coordinator.py", line 157, in start
+    self._coordination_loop()
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/coordinator.py", line 209, in _coordination_loop
+    time.sleep(REBALANCE_INTERVAL)
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/coordinator.py", line 259, in handler
+    self.stop()
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/coordinator.py", line 222, in stop
+    excluded=set(cfg.vampire_symbols or []),
+                 ^^^
+NameError: name 'cfg' is not defined

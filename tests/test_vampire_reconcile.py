@@ -16,11 +16,34 @@ import pytest
 from src.strategies.vampire_engine import VampireConfig, VampireEngine
 
 
+def _filling_client(fill=None):
+    """A client whose IOC orders report filling what was asked.
+
+    Tests written before fill confirmation assumed this implicitly. Stating it
+    explicitly is the point: a bare MagicMock order has no readable filled_qty,
+    and the engine correctly treats an unreadable fill as zero rather than as a
+    completed trade. That distinction is the whole fix.
+    """
+    from unittest.mock import MagicMock as _MM
+
+    c = _MM()
+
+    def _order(symbol, qty, side, tif=None):
+        o = _MM()
+        o.filled_qty = str(qty if fill is None else fill)
+        o.id = "test-order"
+        return o
+
+    c.market_order.side_effect = _order
+    return c
+
+
+
 def _engine(max_notional=6_667.0, max_position=100):
     cfg = VampireConfig(symbol="SPY", tick_threshold=0.02, position_size=10,
                         max_position=max_position, max_daily_loss=1e9,
                         max_notional=max_notional)
-    e = VampireEngine(MagicMock(), MagicMock(), MagicMock(), cfg)
+    e = VampireEngine(_filling_client(), MagicMock(), MagicMock(), cfg)
     e._is_market_hours = lambda: True
     return e
 

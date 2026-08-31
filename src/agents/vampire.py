@@ -10,9 +10,9 @@ import time
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService, Quote
 from src.core.position_tracker import PositionTracker
-from src.strategies.vampire_engine import VampireEngine, VampireConfig, VampireState
-from src.risk.circuit_breakers import CircuitBreaker
 from src.risk.allocation import AllocationManager
+from src.risk.circuit_breakers import CircuitBreaker
+from src.strategies.vampire_engine import VampireConfig, VampireEngine, VampireState
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +26,14 @@ SPREAD_MULTIPLE = 2.5
 # quote flicker all session.
 MIN_TICK_THRESHOLD = 0.02
 SPREAD_SAMPLES = 5
+
+# A quote wider than this fraction of the price is not the book this
+# strategy trades against. HOOD read a median spread of $3.87 on a $104
+# stock at 15:25 on 2026-08-31, 3.7% wide against its usual 4 cents, and
+# the derived trigger came out at $9.67: a 9.3% move required before the
+# symbol would ever act. There was a floor on the threshold and no
+# ceiling, so a bad book silently retires a symbol instead of failing.
+MAX_SPREAD_FRACTION = 0.005
 
 
 class VampireAgent:
@@ -134,28 +142,48 @@ class VampireAgent:
         """
         for sym, engine in self._engines.items():
             spreads: list[float] = []
+            mids: list[float] = []
             for _ in range(SPREAD_SAMPLES):
                 try:
                     quote = self._data.get_latest_quote(sym)
                     if quote:
-                        sp = float(quote.ask) - float(quote.bid)
+                        bid, ask = float(quote.bid), float(quote.ask)
+                        sp = ask - bid
                         if sp > 0:
                             spreads.append(sp)
+                            mids.append((bid + ask) / 2)
                 except Exception:
                     log.warning("quote read failed for %s", sym, exc_info=True)
                 time.sleep(0.2)
+            price = statistics.median(mids) if mids else 0.0
             if not spreads:
                 log.warning("no usable quotes for %s; keeping its configured threshold", sym)
                 continue
             # Median across several reads, not one read: a single quote can
             # catch a momentarily tight book on a name whose spread regime is
             # 10x wider, and the threshold it produces fires on flicker.
-            spread = statistics.median(spreads)
+            usable = [sp for sp in spreads if sp <= price * MAX_SPREAD_FRACTION] \
+                if price and price > 0 else spreads
+            if not usable:
+                log.warning(
+                    "%s: every spread read was wider than %.1f%% of price "
+                    "(median %.3f on a %.2f book); keeping its configured "
+                    "threshold %.4f rather than deriving one from a book this "
+                    "strategy does not trade",
+                    sym, MAX_SPREAD_FRACTION * 100, statistics.median(spreads),
+                    price, engine.cfg.tick_threshold,
+                )
+                continue
+            if len(usable) < len(spreads):
+                log.info("%s: discarded %d of %d spread reads as unrepresentative",
+                         sym, len(spreads) - len(usable), len(spreads))
+
+            spread = statistics.median(usable)
             engine.cfg.tick_threshold = round(
                 max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4
             )
-            log.info("%s median spread %.3f (%d reads) -> tick_threshold %.4f",
-                     sym, spread, len(spreads), engine.cfg.tick_threshold)
+            log.info("%s median spread %.3f (%d of %d reads) -> tick_threshold %.4f",
+                     sym, spread, len(usable), len(spreads), engine.cfg.tick_threshold)
 
     def _apply_sleeve_limits(self) -> None:
         """Split the vampire sleeve across its symbols and cap each engine.

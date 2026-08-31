@@ -11,20 +11,21 @@ import signal
 import sys
 import threading
 import time
-from datetime import datetime, time as dt_time
+from datetime import datetime
+from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
+from src.agents.options_income import OptionsIncomeAgent
+from src.agents.risk_manager import RiskManagerAgent
+from src.agents.sixfold_analyst import SixfoldAnalystAgent
+from src.agents.vampire import VampireAgent
 from src.core.alpaca_client import AlpacaClient
 from src.core.config import get_config
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
+from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
-from src.risk.allocation import AllocationManager, AllocationConfig, parse_occ
-from src.agents.options_income import OptionsIncomeAgent
-from src.agents.vampire import VampireAgent
-from src.agents.risk_manager import RiskManagerAgent
 from src.strategies.sixfold_executor import SixfoldExecutor
-from src.agents.sixfold_analyst import SixfoldAnalystAgent
 
 log = logging.getLogger(__name__)
 
@@ -210,18 +211,6 @@ class Coordinator:
 
     def stop(self):
         log.info("=== Shutting down trading system ===")
-        # SIXFOLD's analyst scores names and places no orders; this is what
-        # lets the largest sleeve actually deploy. Same gates as every other
-        # strategy: it is the least proven signal here, not the most trusted.
-        self._sixfold_executor = None
-        analyst = getattr(self, "_sixfold_agent", None) or getattr(self, "_sixfold", None)
-        if analyst is not None:
-            self._sixfold_executor = SixfoldExecutor(
-                self._client, self._data, self._tracker, self._breaker,
-                self._allocator, analyst,
-                excluded=set(cfg.vampire_symbols or []),
-            )
-
         self._running = False
         self._sixfold_agent.stop()
         self._vampire_agent.stop_all()

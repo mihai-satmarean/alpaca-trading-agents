@@ -7,20 +7,20 @@ Trades both directions: buys dips, shorts rips.
 
 from __future__ import annotations
 
-import asyncio
-import logging
 import json
+import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, time as dt_time
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import time as dt_time
 from enum import Enum
 from zoneinfo import ZoneInfo
 
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 from src.core.alpaca_client import AlpacaClient
-from src.core.market_data import MarketDataService, Quote
+from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 
 log = logging.getLogger(__name__)

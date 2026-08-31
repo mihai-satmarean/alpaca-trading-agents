@@ -8,6 +8,16 @@ Type=simple
 User=ubuntu
 WorkingDirectory=/opt/alpaca-agent
 EnvironmentFile=/opt/alpaca-agent/.env
+
+# Ubuntu runs UTC; the Mac this moved from ran ET. Session gating and the
+# notification schedule both ask for America/New_York explicitly and are safe
+# either way, but the timestamps stamped into bleed records, reports and log
+# lines call datetime.now() with no zone, so on a UTC box every reported time
+# would silently shift four hours against a schedule that is still quoted in
+# ET. Setting the process zone keeps the migration behaviour-preserving
+# instead of converting naive timestamps to aware ones, which would raise
+# TypeError anywhere the two are subtracted.
+Environment=TZ=America/New_York
 ExecStart=/opt/alpaca-agent/.venv/bin/python scripts/run_live.py
 Restart=always
 RestartSec=15

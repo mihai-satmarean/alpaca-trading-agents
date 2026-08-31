@@ -6,17 +6,16 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 
-from dotenv import load_dotenv
-
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.live import StockDataStream
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import OrderSide, OrderType, QueryOrderStatus, TimeInForce
 from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
 )
-from alpaca.trading.enums import OrderSide, OrderType, TimeInForce, QueryOrderStatus
-from alpaca.data.historical import StockHistoricalDataClient
-from alpaca.data.live import StockDataStream
+from dotenv import load_dotenv
 
 load_dotenv()
 
@@ -78,6 +77,23 @@ class AlpacaClient:
     def get_orders(self, status: str = "open"):
         req = GetOrdersRequest(status=QueryOrderStatus(status))
         return self.trading.get_orders(req)
+
+    def get_order(self, order_id: str):
+        """Read one order back by id.
+
+        The scalper polls this to learn whether a market order actually filled,
+        because Alpaca returns filled_qty "0" and status "new" at submit and
+        lands the fill 85-100ms later. This method did not exist until
+        2026-08-31: every poll raised AttributeError, was caught, and fell
+        through to "assume it filled" - 101 times in one session, zero
+        successful polls. The engine therefore counted every submission as a
+        full fill, over-stated its position, and asked the venue to buy back
+        more than it held.
+
+        The tests did not catch it because they inject MagicMock, which invents
+        any attribute asked of it. See test_client_contract.py.
+        """
+        return self.trading.get_order_by_id(order_id)
 
     def market_order(
         self,

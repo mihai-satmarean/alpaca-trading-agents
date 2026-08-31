@@ -29,7 +29,6 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-import pytest
 from alpaca.trading.enums import OrderSide
 
 from src.strategies.vampire_engine import VampireConfig, VampireEngine

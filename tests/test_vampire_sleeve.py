@@ -145,6 +145,7 @@ class TestZeroAllocationStopsIt:
     def test_zero_budget_means_the_agent_does_not_start(self):
         import asyncio
         from unittest.mock import MagicMock
+
         from src.agents.vampire import VampireAgent
 
         client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
@@ -155,12 +156,18 @@ class TestZeroAllocationStopsIt:
         asyncio.run(a.run())
         data.subscribe_quotes.assert_not_called()
 
-    def test_repo_config_runs_it_at_quarter_size(self):
-        """Re-enabled at 5% after the audit found the real cause. A quarter of
-        the original allocation, because it has three breaches behind it and one
-        session of correct behaviour ahead of it."""
+    def test_repo_config_sizes_it_so_every_symbol_can_trade(self):
+        """The sleeve is split evenly across symbols, so the floor is set by the
+        most expensive one. At 5% across four symbols each gets $1,250, and a
+        $715 QQQ rounds to a single share: configured to trade, unable to.
+        """
         from src.core.config import load_config
-        assert load_config().vampire_pct == 0.05
+        cfg = load_config()
+        assert cfg.vampire_pct == 0.10
+        per_symbol = 100_000 * cfg.vampire_pct / max(len(cfg.vampire_symbols), 1)
+        assert per_symbol >= 2_000, (
+            f"${per_symbol:,.0f} per symbol is too thin to trade the priciest name"
+        )
 
 
 class TestSpreadAwareThresholds:
@@ -169,6 +176,7 @@ class TestSpreadAwareThresholds:
 
     def _agent(self, spread, price=700.0):
         from unittest.mock import MagicMock
+
         from src.agents.vampire import VampireAgent
         client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
         q = MagicMock(); q.bid = price - spread / 2; q.ask = price + spread / 2; q.mid = price

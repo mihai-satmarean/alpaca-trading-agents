@@ -1,7 +1,13 @@
+# Agreed 2026-08-31 pre-market. CSP $20k, vampire $20k on a $100k account.
+# The remaining 60% is deliberately UNALLOCATED, not assigned to sixfold:
+# SixfoldAnalystAgent produces recommendations and places no orders, so
+# capital pointed at it would sit idle either way. Naming it reserve keeps the
+# books honest. Raise options_pct/vampire_pct, or add a sixfold sleeve, once
+# something acts on those recommendations.
 allocation:
-  options_pct: 0.80
-  vampire_pct: 0.15
-  reserve_pct: 0.05
+  options_pct: 0.20      # CSP, $20,000
+  vampire_pct: 0.20      # scalper, $20,000
+  reserve_pct: 0.60      # $60,000 uncommitted (Tashi's sleeve + buffer)
 
 vampire:
   symbols:
@@ -17,15 +23,24 @@ vampire:
   max_trades_per_min: 20
 
 options:
+  # Priced for a $20,000 sleeve. The previous list was untradeable here: at
+  # today's prices one SPY put ties up $71,500, AAPL $29,700 and NVDA $20,200,
+  # so a single contract met or exceeded the entire allocation and the scanner
+  # would have found nothing to do all week. These names put collateral between
+  # $200 and $2,400 a contract, which is what makes diversifying possible at
+  # this size. Thin chains are rejected by min_open_interest rather than by
+  # being left off the list.
   symbols:
-    - SPY
-    - QQQ
-    - AAPL
-    - MSFT
-    - AMZN
-    - NVDA
-    - META
-    - GOOGL
+    - CLF
+    - NIO
+    - ABAT
+    - F
+    - SOFI
+    - MARA
+    - RIVN
+    - T
+    - BAC
+    - INTC
   csp:
     min_premium_pct: 0.005
     max_days_to_expiry: 45

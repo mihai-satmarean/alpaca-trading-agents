@@ -23,6 +23,7 @@ from src.risk.allocation import AllocationManager, AllocationConfig, parse_occ
 from src.agents.options_income import OptionsIncomeAgent
 from src.agents.vampire import VampireAgent
 from src.agents.risk_manager import RiskManagerAgent
+from src.strategies.sixfold_executor import SixfoldExecutor
 from src.agents.sixfold_analyst import SixfoldAnalystAgent
 
 log = logging.getLogger(__name__)
@@ -76,6 +77,18 @@ class Coordinator:
                 "PG", "HD", "COST", "ABBV", "LLY", "MRK",
             ],
         )
+
+        # SIXFOLD's analyst scores names and places no orders; this is what
+        # lets the largest sleeve actually deploy. Same gates as every other
+        # strategy: it is the least proven signal here, not the most trusted.
+        self._sixfold_executor = None
+        analyst = getattr(self, "_sixfold_agent", None) or getattr(self, "_sixfold", None)
+        if analyst is not None:
+            self._sixfold_executor = SixfoldExecutor(
+                self._client, self._data, self._tracker, self._breaker,
+                self._allocator, analyst,
+                excluded=set(cfg.vampire_symbols or []),
+            )
 
         self._running = False
 
@@ -162,6 +175,14 @@ class Coordinator:
                     time.sleep(60)
                     continue
 
+                if self._sixfold_executor is not None:
+                    try:
+                        result = self._sixfold_executor.run_cycle()
+                        if result.get("orders"):
+                            log.info("SIXFOLD placed %d orders", len(result["orders"]))
+                    except Exception:
+                        log.exception("SIXFOLD cycle failed")
+
                 if self._allocator.needs_rebalance():
                     log.info("Rebalancing allocations")
                     budget = self._allocator.get_budget()
@@ -189,6 +210,18 @@ class Coordinator:
 
     def stop(self):
         log.info("=== Shutting down trading system ===")
+        # SIXFOLD's analyst scores names and places no orders; this is what
+        # lets the largest sleeve actually deploy. Same gates as every other
+        # strategy: it is the least proven signal here, not the most trusted.
+        self._sixfold_executor = None
+        analyst = getattr(self, "_sixfold_agent", None) or getattr(self, "_sixfold", None)
+        if analyst is not None:
+            self._sixfold_executor = SixfoldExecutor(
+                self._client, self._data, self._tracker, self._breaker,
+                self._allocator, analyst,
+                excluded=set(cfg.vampire_symbols or []),
+            )
+
         self._running = False
         self._sixfold_agent.stop()
         self._vampire_agent.stop_all()

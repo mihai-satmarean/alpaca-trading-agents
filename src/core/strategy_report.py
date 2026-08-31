@@ -36,6 +36,9 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
     cfg = get_config()
     equity = snapshot.equity
     scalper_universe = {s.upper() for s in cfg.vampire_symbols}
+    # Overlap goes to the scalper, and the executor refuses to buy those names,
+    # so a position can always be attributed to exactly one sleeve.
+    sixfold_universe = {s.upper() for s in (cfg.sixfold.get("universe") or [])} - scalper_universe
 
     sleeves = {
         "CSP (options)": SleeveReport("CSP (options)", equity * cfg.options_pct),
@@ -49,6 +52,8 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
             key = "CSP (options)"
         elif sym.upper() in scalper_universe:
             key = "Vampire (scalper)"
+        elif sym.upper() in sixfold_universe:
+            key = "SixFold (Tashi)"
         else:
             key = "Unattributed"
         s = sleeves[key]

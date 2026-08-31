@@ -9,3 +9,7 @@ dist/
 .venv/
 venv/
 .mypy_cache/
+
+# Claude Code local settings (contains the shared LiteLLM key)
+.claude/settings.local.json
+.claude/settings.dell4.json

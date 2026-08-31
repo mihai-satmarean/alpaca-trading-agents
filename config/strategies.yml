@@ -54,10 +54,29 @@ vampire:
   # 0.00.
   #
   # These three are the least bad measured, and none of them clears 1.5.
+  # Round two, 2026-08-31 ~13:45 ET: 26 candidates, 92s sample, then an
+  # independent 48s confirmation of the shortlist. Ranked by move/spread:
+  #
+  #   HOOD 12.52 then 7.57  confirmed, tight 4-5bp book while genuinely moving
+  #   SPY   0.77 then 0.89  stable, sub-1
+  #   TQQQ  0.47 then 0.74  stable penny spread
+  #   QQQ   0.49 then 0.72  stable
+  #   SOXL  0.47 then 0.60  stable
+  #
+  # PLTR (1.50 -> 0.26) and VST (1.95 -> 0.18) were DISQUALIFIED: their IEX
+  # spreads blew out 13x and 67x between samples, so their first-round ratios
+  # were book instability, not capturable movement. A single-sample ratio is
+  # not evidence; a threshold set from one tight quote on a name like that
+  # fires on flicker all day.
+  #
+  # Configured: HOOD plus the two stable names with usable share granularity
+  # at the per-name budget (SPY and QQQ round to 1-2 shares at ~$1,671).
+  # HOOD's edge is condition-dependent (a momentum day); the spread-derived
+  # threshold keeps TQQQ/SOXL near-dormant unless a real move arrives.
   symbols:
-    - SPY
-    - QQQ
-    - PLTR
+    - HOOD
+    - TQQQ
+    - SOXL
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

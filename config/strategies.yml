@@ -39,8 +39,9 @@ options:
     - MARA
     - RIVN
     - T
-    - BAC
-    - INTC
+  # BAC (~$5,900 collateral) and INTC (~$8,300) are excluded deliberately: the
+  # 5% max_single_trade_pct gate is $5,000 on a $100k account, so neither can
+  # ever clear it. Leaving them in only fills the log with skips.
   csp:
     min_premium_pct: 0.005
     max_days_to_expiry: 45

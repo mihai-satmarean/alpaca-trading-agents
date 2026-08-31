@@ -85,7 +85,12 @@ def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
     try:
         snap = coord._tracker.get_snapshot()
         sleeves = build_report(snap)
-        body = render(snap, sleeves)
+        try:
+            orders = coord._client.get_orders(status="open")
+        except Exception:
+            log.warning("could not read working orders", exc_info=True)
+            orders = []
+        body = render(snap, sleeves, orders)
 
         # The narrative is additive. It is generated from the numbers above,
         # after the fact, and its absence changes nothing but the prose.

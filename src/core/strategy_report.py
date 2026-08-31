@@ -58,7 +58,29 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
     return sleeves
 
 
-def render(snapshot, sleeves: dict[str, SleeveReport]) -> str:
+def describe_orders(orders) -> list[str]:
+    """Working orders, which are invisible in a positions-only view.
+
+    An order that is accepted but unfilled is exactly the state worth seeing
+    before the open, and it is not a position yet, so nothing in the sleeve
+    figures reflects it.
+    """
+    lines: list[str] = []
+    for o in orders or []:
+        try:
+            sym = getattr(o, "symbol", None) or o.get("symbol")
+            side = getattr(o, "side", None) or o.get("side")
+            qty = getattr(o, "qty", None) or o.get("qty")
+            limit = getattr(o, "limit_price", None) or o.get("limit_price")
+            status = getattr(o, "status", None) or o.get("status")
+            price = f" @ {float(limit):.2f}" if limit else ""
+            lines.append(f"  {sym} {side} {qty}{price} · {status}")
+        except Exception:
+            log.warning("could not render an order", exc_info=True)
+    return lines
+
+
+def render(snapshot, sleeves: dict[str, SleeveReport], orders=None) -> str:
     lines = [
         f"**Equity** ${snapshot.equity:,.2f}  |  **Cash** ${snapshot.cash:,.2f}",
         f"**Day P&L** {fmt_money(snapshot.daily_pnl)}",
@@ -71,14 +93,22 @@ def render(snapshot, sleeves: dict[str, SleeveReport]) -> str:
         cap = f" / ${s.budget:,.0f} ({s.utilisation:.0%})" if s.budget else ""
         lines.append(f"**{s.name}** {used}{cap}")
         lines.append(f"  unrealized {fmt_money(s.unrealized)} · {len(s.positions)} position(s)")
+        for sym in s.positions[:6]:
+            lines.append(f"    {sym}")
+
+    order_lines = describe_orders(orders)
+    if order_lines:
+        lines += ["", f"**Working orders** ({len(order_lines)})", *order_lines]
+    elif not any(s.positions for s in sleeves.values()):
+        lines += ["", "_No positions and no working orders._"]
     return "\n".join(lines)
 
 
-def send_report(snapshot, *, severity: str = "default") -> bool:
+def send_report(snapshot, *, severity: str = "default", orders=None) -> bool:
     sleeves = build_report(snapshot)
     return notify(
         f"Alpaca agent · {fmt_money(snapshot.daily_pnl)} today",
-        render(snapshot, sleeves),
+        render(snapshot, sleeves, orders),
         severity=severity,
         tags=["chart_with_upwards_trend"],
     )

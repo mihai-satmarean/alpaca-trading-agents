@@ -110,3 +110,25 @@ class TestAgentSplitsTheSleeve:
         a = VampireAgent(client, data, tracker, breaker, allocator, symbols=["SPY"])
         a._apply_sleeve_limits()
         assert a._engines["SPY"].cfg.max_notional == pytest.approx(20_000.0)
+
+
+class TestZeroAllocationStopsIt:
+    """Disabling a strategy has to mean it does not run, not that it runs with a
+    small number."""
+
+    def test_zero_budget_means_the_agent_does_not_start(self):
+        import asyncio
+        from unittest.mock import MagicMock
+        from src.agents.vampire import VampireAgent
+
+        client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
+        breaker.check.return_value = True
+        allocator.get_budget.return_value = MagicMock(vampire_budget=0.0,
+                                                      vampire_available=0.0)
+        a = VampireAgent(client, data, tracker, breaker, allocator, symbols=["SPY"])
+        asyncio.run(a.run())
+        data.subscribe_quotes.assert_not_called()
+
+    def test_repo_config_currently_has_it_disabled(self):
+        from src.core.config import load_config
+        assert load_config().vampire_pct == 0.0

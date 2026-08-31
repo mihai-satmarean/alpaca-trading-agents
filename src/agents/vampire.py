@@ -142,6 +142,9 @@ class VampireAgent:
             return
 
         budget = self._allocator.get_budget()
+        if budget.vampire_budget <= 0:
+            log.warning("Vampire allocation is zero; agent will not start")
+            return
         if budget.vampire_available < 500:
             log.warning("Insufficient vampire budget ($%.0f), not starting", budget.vampire_available)
             return

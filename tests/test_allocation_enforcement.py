@@ -147,10 +147,16 @@ class TestConfigDrivesBehaviour:
             assert 0.0 <= pct <= 1.0
 
     def test_repo_config_matches_the_agreed_split(self):
-        """Agreed 2026-08-31: sixfold 50, CSP 20, vampire 20, buffer 10."""
+        """Agreed 2026-08-31: sixfold 50, CSP 20, vampire 20, buffer 10.
+
+        The scalper's 20% is held at zero pending a fix to its execution, and
+        moved to reserve rather than reallocated, because nothing else has been
+        sized to absorb it.
+        """
         cfg = load_config()
-        assert (cfg.sixfold_pct, cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct) \
-            == (0.50, 0.20, 0.20, 0.10)
+        assert (cfg.sixfold_pct, cfg.options_pct) == (0.50, 0.20)
+        assert cfg.vampire_pct == 0.0, "scalper is disabled pending fill confirmation"
+        assert cfg.reserve_pct == 0.30
 
     def test_sixfold_budget_is_reported_even_though_it_cannot_trade(self):
         """The sleeve is named so the gap is visible. Folding it into reserve

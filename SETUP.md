@@ -113,3 +113,36 @@ Machines page.
 ```
 
 Checks VPN → proxy → model list → a real chat completion.
+
+## 6. Running on EC2
+
+The agent runs on a laptop only for as long as that is acceptable. For an
+unattended multi-day session it belongs on a box that does not sleep.
+
+**Do not co-locate it with the arb engine.** That instance
+(`i-024ab26693e4ac382`, t4g.small) runs four live real-money services and has
+711 MB of RAM free, 3.1 GB of disk, and Python 3.9 where this project needs
+3.12. An out-of-memory kill from a paper trading agent taking down a live arb
+engine is not a trade worth making to save two dollars of EC2.
+
+Use a separate `t4g.medium` (ARM, 4 GB). About $3 for a week.
+
+```bash
+# one time, on a fresh Ubuntu box
+scp deploy/provision.sh ubuntu@<host>:~
+ssh ubuntu@<host> 'bash provision.sh'
+scp .env ubuntu@<host>:/opt/alpaca-agent/.env          # never committed
+ssh ubuntu@<host> 'sudo cp /opt/alpaca-agent/deploy/alpaca-agent.service /etc/systemd/system/ \
+  && sudo systemctl daemon-reload && sudo systemctl enable --now alpaca-agent'
+
+# every update after that
+./deploy/deploy.sh ubuntu@<host>
+```
+
+`deploy.sh` pulls from `origin/main` rather than copying the working tree, so
+what runs is what was reviewed and merged, runs the tests before restarting, and
+checks the service actually came back instead of assuming it.
+
+The unit sets `Restart=always`. That is safe now that shutdown only cancels the
+scalper's resting orders: an unattended restart can no longer forfeit a CSP fill
+that was waiting to happen.

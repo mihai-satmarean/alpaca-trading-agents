@@ -19,7 +19,7 @@ from src.core.config import get_config
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
-from src.risk.allocation import AllocationManager, AllocationConfig
+from src.risk.allocation import AllocationManager, AllocationConfig, parse_occ
 from src.agents.options_income import OptionsIncomeAgent
 from src.agents.vampire import VampireAgent
 from src.agents.risk_manager import RiskManagerAgent
@@ -192,12 +192,33 @@ class Coordinator:
         self._running = False
         self._sixfold_agent.stop()
         self._vampire_agent.stop_all()
-        try:
-            self._client.cancel_all_orders()
-            log.info("All open orders cancelled")
-        except Exception:
-            log.exception("Order cancellation failed")
+        self.cancel_intraday_orders()
         log.info("Shutdown complete")
+
+    def cancel_intraday_orders(self) -> list[str]:
+        """Cancel the scalper's resting orders and leave the options book alone.
+
+        Shutdown used to cancel everything. A restart therefore killed resting
+        CSP limit orders that were waiting to fill, which over a multi-day run
+        quietly forfeits fills the strategy had already earned. The scalper's
+        orders genuinely should not survive the process; the options sleeve's
+        should, for the same reason its positions survive the daily flatten.
+        """
+        cancelled: list[str] = []
+        try:
+            for order in self._client.get_orders(status="open"):
+                symbol = str(getattr(order, "symbol", "")).upper()
+                if parse_occ(symbol) is not None:
+                    continue                      # options sleeve: leave resting
+                try:
+                    self._client.cancel_order(str(order.id))
+                    cancelled.append(symbol)
+                except Exception:
+                    log.warning("could not cancel %s", symbol, exc_info=True)
+            log.info("Cancelled intraday orders: %s", cancelled or "(none)")
+        except Exception:
+            log.exception("Could not enumerate open orders")
+        return cancelled
 
     def _setup_signal_handlers(self):
         def handler(signum, frame):

@@ -28,6 +28,7 @@ load_dotenv()
 from src.agents.coordinator import Coordinator  # noqa: E402
 from src.core.notify import fmt_money, notify  # noqa: E402
 from src.agents.narrator import NarrationRequest, narrate, summarise_session  # noqa: E402
+from src.core.schedule import ET as SCHED_ET, next_checkpoint, seconds_until  # noqa: E402
 from src.core.strategy_report import build_report, render  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
@@ -81,7 +82,7 @@ def _recent_rejections(coord: Coordinator) -> list[dict]:
 
 
 def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
-           closing: bool = False) -> None:
+           closing: bool = False, blurb: str = "") -> None:
     try:
         snap = coord._tracker.get_snapshot()
         sleeves = build_report(snap)
@@ -91,6 +92,8 @@ def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
             log.warning("could not read working orders", exc_info=True)
             orders = []
         body = render(snap, sleeves, orders)
+        if blurb:
+            body = f"_{blurb}_\n\n{body}"
 
         # The narrative is additive. It is generated from the numbers above,
         # after the fact, and its absence changes nothing but the prose.
@@ -118,10 +121,21 @@ def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
 
 
 def reporter(coord: Coordinator, stop: threading.Event) -> None:
-    """Report on a fixed cadence. Never allowed to raise into the trading loop."""
-    while not stop.wait(REPORT_EVERY):
-        if market_is_open():
-            report(coord)
+    """Report at the session's fixed checkpoints, in Eastern.
+
+    A clock rather than an interval: the useful moments are tied to the session.
+    Two of them sit outside market hours on purpose, so this must not gate on
+    the market being open the way an interval reporter could.
+    """
+    while not stop.is_set():
+        when, cp = next_checkpoint(datetime.now(SCHED_ET))
+        delay = seconds_until(when)
+        log.info("next report %s at %s ET (in %.0f min)", cp.label,
+                 when.strftime("%H:%M"), delay / 60)
+        if stop.wait(delay):
+            return
+        report(coord, prefix=f"{cp.label} · ", severity=cp.severity,
+               closing=cp.closing, blurb=cp.blurb)
 
 
 def main() -> int:
@@ -155,6 +169,10 @@ def main() -> int:
         tags=["rocket"],
     )
 
+    # Start the checkpoint reporter immediately: 07:00 and 16:15 both sit
+    # outside market hours, so it cannot wait for the open.
+    threading.Thread(target=reporter, args=(coord, stop), daemon=True).start()
+
     while not market_is_open():
         now = datetime.now(ET)
         if now.time() > CLOSE or now.weekday() >= 5:
@@ -165,8 +183,7 @@ def main() -> int:
             return 0
 
     log.info("market open — starting agents")
-    threading.Thread(target=reporter, args=(coord, stop), daemon=True).start()
-    report(coord, prefix="OPEN · ")
+    report(coord, prefix="OPEN · ", blurb="Market open. Agents live.")
 
     coord.start()   # blocks in the coordination loop
     return 0

@@ -29,6 +29,7 @@ class StrategyConfig:
     vampire: dict[str, Any] = field(default_factory=dict)
     options: dict[str, Any] = field(default_factory=dict)
     risk: dict[str, Any] = field(default_factory=dict)
+    sixfold: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sixfold_pct(self) -> float:
@@ -107,6 +108,7 @@ def load_config(path: Path | None = None) -> StrategyConfig:
         vampire=raw.get("vampire", {}) or {},
         options=raw.get("options", {}) or {},
         risk=raw.get("risk", {}) or {},
+        sixfold=raw.get("sixfold", {}) or {},
     )
 
     for problem in cfg.validate():

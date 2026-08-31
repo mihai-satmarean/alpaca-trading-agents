@@ -1,14 +1,10 @@
-09:02:58 INFO src.agents.options_income: MCP quote source ready (72 tools)
-09:02:58 INFO run_live: next report OPEN at 09:30 ET (in 27 min)
-09:02:58 INFO run_live: pre-market 09:02 ET, waiting for 09:30
-09:03:28 INFO run_live: pre-market 09:03 ET, waiting for 09:30
-09:03:58 INFO run_live: pre-market 09:03 ET, waiting for 09:30
-09:04:28 INFO run_live: pre-market 09:04 ET, waiting for 09:30
-09:04:58 INFO run_live: pre-market 09:04 ET, waiting for 09:30
-09:05:28 INFO run_live: pre-market 09:05 ET, waiting for 09:30
-09:05:58 INFO run_live: pre-market 09:05 ET, waiting for 09:30
-09:06:28 INFO run_live: pre-market 09:06 ET, waiting for 09:30
-09:06:58 INFO run_live: pre-market 09:06 ET, waiting for 09:30
-09:07:28 INFO run_live: pre-market 09:07 ET, waiting for 09:30
-09:07:58 INFO run_live: pre-market 09:07 ET, waiting for 09:30
-09:08:28 INFO run_live: pre-market 09:08 ET, waiting for 09:30
+09:12:40 INFO src.agents.options_income: MCP quote source ready (72 tools)
+09:12:40 INFO run_live: next report OPEN at 09:30 ET (in 17 min)
+09:12:40 INFO run_live: pre-market 09:12 ET, waiting for 09:30
+09:13:10 INFO run_live: pre-market 09:13 ET, waiting for 09:30
+09:13:40 INFO run_live: pre-market 09:13 ET, waiting for 09:30
+09:14:10 INFO run_live: pre-market 09:14 ET, waiting for 09:30
+09:14:40 INFO run_live: pre-market 09:14 ET, waiting for 09:30
+09:15:10 INFO run_live: pre-market 09:15 ET, waiting for 09:30
+09:15:40 INFO run_live: pre-market 09:15 ET, waiting for 09:30
+09:16:10 INFO run_live: pre-market 09:16 ET, waiting for 09:30

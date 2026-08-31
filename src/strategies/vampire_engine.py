@@ -202,39 +202,53 @@ class VampireEngine:
 
         if delta >= self.cfg.tick_threshold:
             if self._net_position > 0:
-                qty = min(self._net_position, self.cfg.position_size)
-                self._sell(qty, current_price)
-                realized = self._close_lot(qty, current_price, long=True)
-                self._net_position -= qty
-                if self._net_position == 0:
-                    self._avg_entry = None
-                self._record_bleed(qty, delta, "long_exit", realized)
+                want = min(self._net_position, self.cfg.position_size)
+                qty = self._submit(want, current_price, OrderSide.SELL)
+                if qty:
+                    self._last_fill_price = current_price
+                    self._tracker.record_trade(self.cfg.symbol, "sell", qty,
+                                               current_price, "vampire")
+                    realized = self._close_lot(qty, current_price, long=True)
+                    self._net_position -= qty
+                    if self._net_position == 0:
+                        self._avg_entry = None
+                    self._record_bleed(qty, delta, "long_exit", realized)
 
             elif (abs(self._net_position) < self.cfg.max_position
                   and not self._would_breach_notional(self.cfg.position_size, current_price)):
-                qty = self.cfg.position_size
-                self._sell_short(qty, current_price)
-                self._open_lot(qty, current_price, long=False)
-                self._net_position -= qty
-                self._record_bleed(qty, delta, "short_entry")
+                qty = self._submit(self.cfg.position_size, current_price, OrderSide.SELL)
+                if qty:
+                    self._last_fill_price = current_price
+                    self._tracker.record_trade(self.cfg.symbol, "sell_short", qty,
+                                               current_price, "vampire")
+                    self._open_lot(qty, current_price, long=False)
+                    self._net_position -= qty
+                    self._record_bleed(qty, delta, "short_entry")
 
         elif delta <= -self.cfg.tick_threshold:
             if self._net_position < 0:
-                qty = min(abs(self._net_position), self.cfg.position_size)
-                self._buy_to_cover(qty, current_price)
-                realized = self._close_lot(qty, current_price, long=False)
-                self._net_position += qty
-                if self._net_position == 0:
-                    self._avg_entry = None
-                self._record_bleed(qty, abs(delta), "short_exit", realized)
+                want = min(abs(self._net_position), self.cfg.position_size)
+                qty = self._submit(want, current_price, OrderSide.BUY)
+                if qty:
+                    self._last_fill_price = current_price
+                    self._tracker.record_trade(self.cfg.symbol, "buy_to_cover", qty,
+                                               current_price, "vampire")
+                    realized = self._close_lot(qty, current_price, long=False)
+                    self._net_position += qty
+                    if self._net_position == 0:
+                        self._avg_entry = None
+                    self._record_bleed(qty, abs(delta), "short_exit", realized)
 
             elif (self._net_position < self.cfg.max_position
                   and not self._would_breach_notional(self.cfg.position_size, current_price)):
-                qty = self.cfg.position_size
-                self._buy(qty, current_price)
-                self._open_lot(qty, current_price, long=True)
-                self._net_position += qty
-                self._record_bleed(qty, abs(delta), "long_entry")
+                qty = self._submit(self.cfg.position_size, current_price, OrderSide.BUY)
+                if qty:
+                    self._last_fill_price = current_price
+                    self._tracker.record_trade(self.cfg.symbol, "buy", qty,
+                                               current_price, "vampire")
+                    self._open_lot(qty, current_price, long=True)
+                    self._net_position += qty
+                    self._record_bleed(qty, abs(delta), "long_entry")
 
         marked = self.total_pnl(current_price)
         if marked <= -self.cfg.max_daily_loss:
@@ -246,6 +260,38 @@ class VampireEngine:
             )
             self._flatten_all("circuit_breaker")
             self._state = VampireState.STOPPED
+
+    def _submit(self, qty: int, price: float, side: OrderSide) -> int:
+        """Place an IOC order and return the quantity that actually filled.
+
+        The engine used to assume every order filled. IOC orders frequently do
+        not, so the position counter drifted from the broker within a single
+        session: it believed it had sold what it still held, and bought again.
+        Anything unconfirmed counts as zero, which errs toward believing we hold
+        MORE than we do and therefore toward trading less.
+        """
+        try:
+            order = self._client.market_order(
+                self.cfg.symbol, qty, side, TimeInForce.IOC
+            )
+        except Exception:
+            log.warning("%s order failed for %s", side, self.cfg.symbol, exc_info=True)
+            return 0
+
+        filled = getattr(order, "filled_qty", None)
+        if filled is None:
+            oid = getattr(order, "id", None)
+            if oid is not None:
+                try:
+                    filled = getattr(self._client.get_order(str(oid)), "filled_qty", 0)
+                except Exception:
+                    log.warning("could not confirm fill for %s", self.cfg.symbol,
+                                exc_info=True)
+                    return 0
+        try:
+            return int(float(filled or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def _buy(self, qty: int, price: float):
         try:

@@ -6,20 +6,21 @@
 # named here rather than folded into reserve on purpose: a sleeve showing
 # $50,000 allocated and $0 committed makes that gap visible, where a larger
 # reserve figure hid it.
-# The scalper is DISABLED as of 2026-08-31 10:50 ET after breaching its
-# allocation twice in one session. Root cause is not the cap: the engine fires
-# IOC market orders, swallows the result, and updates its position counter as
-# though every order filled. IOC orders frequently do not fill. The counter
-# stayed inside +/-8 shares all session while the broker reached 96, because the
-# engine believed it had sold what it still held and bought again. Execution is
-# fire-and-forget; it needs fill confirmation or continuous reconciliation
-# before it trades real size again. Its 20% moves to reserve rather than to
-# another strategy, because nothing else has been sized for it.
+# The scalper breached its allocation twice on 2026-08-31 and was disabled at
+# 10:50 ET. Root cause was not the cap: it fired IOC market orders, swallowed
+# the result, and moved its position counter as though every order filled. IOC
+# orders frequently do not. The counter stayed inside +/-8 shares all session
+# while the broker reached 96, because the engine believed it had sold what it
+# still held and bought again.
+#
+# Re-enabled at HALF SIZE once the engine began counting only confirmed fills.
+# Ten percent rather than twenty because the fix is hours old and the strategy
+# has no clean session behind it; raise it after one that behaves.
 allocation:
   sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
-  vampire_pct: 0.00      # DISABLED, see above
-  reserve_pct: 0.30      # buffer $10,000 + the scalper's idle $20,000
+  vampire_pct: 0.10      # scalper, $10,000: half size while execution proves out
+  reserve_pct: 0.20      # buffer
 
 vampire:
   symbols:

@@ -16,11 +16,34 @@ from src.agents.vampire import VampireAgent
 from src.strategies.vampire_engine import VampireConfig, VampireEngine
 
 
+def _filling_client(fill=None):
+    """A client whose IOC orders report filling what was asked.
+
+    Tests written before fill confirmation assumed this implicitly. Stating it
+    explicitly is the point: a bare MagicMock order has no readable filled_qty,
+    and the engine correctly treats an unreadable fill as zero rather than as a
+    completed trade. That distinction is the whole fix.
+    """
+    from unittest.mock import MagicMock as _MM
+
+    c = _MM()
+
+    def _order(symbol, qty, side, tif=None):
+        o = _MM()
+        o.filled_qty = str(qty if fill is None else fill)
+        o.id = "test-order"
+        return o
+
+    c.market_order.side_effect = _order
+    return c
+
+
+
 def _engine(max_notional=None, max_position=100, position_size=10):
     cfg = VampireConfig(symbol="SPY", tick_threshold=0.02, position_size=position_size,
                         max_position=max_position, max_daily_loss=1e9,
                         max_notional=max_notional)
-    e = VampireEngine(MagicMock(), MagicMock(), MagicMock(), cfg)
+    e = VampireEngine(_filling_client(), MagicMock(), MagicMock(), cfg)
     e._is_market_hours = lambda: True
     return e
 
@@ -129,6 +152,8 @@ class TestZeroAllocationStopsIt:
         asyncio.run(a.run())
         data.subscribe_quotes.assert_not_called()
 
-    def test_repo_config_currently_has_it_disabled(self):
+    def test_repo_config_runs_it_at_half_size(self):
+        """Re-enabled at 10% after fill confirmation landed, not the original
+        20%: the fix is hours old and the strategy has no clean session yet."""
         from src.core.config import load_config
-        assert load_config().vampire_pct == 0.0
+        assert load_config().vampire_pct == 0.10

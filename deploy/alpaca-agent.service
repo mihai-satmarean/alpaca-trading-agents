@@ -1,0 +1,23 @@
+[Unit]
+Description=ProductAdvisors Alpaca trading agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/alpaca-agent
+EnvironmentFile=/opt/alpaca-agent/.env
+ExecStart=/opt/alpaca-agent/.venv/bin/python scripts/run_live.py
+Restart=always
+RestartSec=15
+StandardOutput=append:/opt/alpaca-agent/logs/session.log
+StandardError=append:/opt/alpaca-agent/logs/session.err
+
+# A restart cancels the scalper's resting orders but leaves the options book,
+# so an unattended restart cannot forfeit a CSP fill that was waiting.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

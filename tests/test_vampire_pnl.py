@@ -28,6 +28,7 @@ def _filling_client(fill=None):
 
     def order(symbol, qty, side, tif=None):
         o = MagicMock()
+        o.status = "filled"
         o.filled_qty = str(qty if fill is None else fill)
         o.id = "test-order"
         return o

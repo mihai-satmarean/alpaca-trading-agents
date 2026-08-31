@@ -90,8 +90,13 @@ class TestRepeatedNoFillsCannotGrowTheBook:
 
 
 class TestSubmitReportsTheTruth:
-    """_submit itself, not a stub of it. The earlier tests replace _submit, so
-    they cannot catch a regression inside it."""
+    """_submit itself, not a stub of it.
+
+    Superseded in part by test_vampire_submit.py after the audit: an order that
+    is still pending at submit is now POLLED rather than counted as unfilled,
+    and an unknown outcome is assumed FILLED. Reading filled_qty off the submit
+    response is exactly what caused the third breach.
+    """
 
     def _engine_with(self, order):
         from unittest.mock import MagicMock
@@ -101,17 +106,17 @@ class TestSubmitReportsTheTruth:
         client.market_order.return_value = order
         return VampireEngine(client, MagicMock(), MagicMock(), cfg), client
 
-    def test_reports_the_filled_quantity(self):
+    def test_reports_the_filled_quantity_of_a_resolved_order(self):
         from unittest.mock import MagicMock
         from alpaca.trading.enums import OrderSide
-        o = MagicMock(); o.filled_qty = "7"
+        o = MagicMock(); o.status, o.filled_qty = "filled", "7"
         e, _ = self._engine_with(o)
         assert e._submit(10, 100.0, OrderSide.BUY) == 7
 
-    def test_an_unfilled_order_reports_zero(self):
+    def test_a_resolved_order_that_filled_nothing_reports_zero(self):
         from unittest.mock import MagicMock
         from alpaca.trading.enums import OrderSide
-        o = MagicMock(); o.filled_qty = "0"
+        o = MagicMock(); o.status, o.filled_qty = "canceled", "0"
         e, _ = self._engine_with(o)
         assert e._submit(10, 100.0, OrderSide.BUY) == 0
 
@@ -122,12 +127,12 @@ class TestSubmitReportsTheTruth:
         client.market_order.side_effect = RuntimeError("rejected")
         assert e._submit(10, 100.0, OrderSide.BUY) == 0
 
-    def test_an_unreadable_fill_reports_zero_not_the_request(self):
-        """The safe direction: believing we hold MORE than we do makes us trade
-        less, which is the error worth having."""
+    def test_an_unreadable_fill_assumes_the_full_quantity(self):
+        """Corrected by the audit. Assuming UNFILLED is what let the book run
+        away: the counter never moved, so the engine kept buying. Believing we
+        hold more than we do only makes it trade less."""
         from unittest.mock import MagicMock
         from alpaca.trading.enums import OrderSide
-        o = MagicMock(); o.filled_qty = "not-a-number"
+        o = MagicMock(); o.status, o.filled_qty = "filled", "not-a-number"
         e, _ = self._engine_with(o)
-        e._client.get_order.side_effect = RuntimeError("no")
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert e._submit(10, 100.0, OrderSide.BUY) == 10

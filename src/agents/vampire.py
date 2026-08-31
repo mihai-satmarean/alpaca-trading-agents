@@ -102,6 +102,22 @@ class VampireAgent:
                     "%s is not shortable; dropping it from the scalper "
                     "(a bi-directional engine cannot run on it)", sym,
                 )
+                # Flatten BEFORE dropping. stop_all and the end-of-day flatten
+                # both iterate self._engines, so a position whose engine has
+                # been removed is unreachable by every exit path there is and
+                # would carry overnight with nothing able to close it. Removing
+                # SOXL from config on 2026-08-31 orphaned 12 shares exactly this
+                # way; they had to be closed by hand.
+                engine = self._engines.get(sym)
+                if engine is not None:
+                    try:
+                        engine._flatten_all("not_shortable")
+                    except Exception:
+                        log.exception(
+                            "%s: could not flatten before dropping; KEEPING the "
+                            "engine so the position stays reachable", sym,
+                        )
+                        continue
                 self._engines.pop(sym, None)
 
     def _apply_spread_thresholds(self) -> None:

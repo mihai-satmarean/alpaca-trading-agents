@@ -54,7 +54,30 @@ def _recent_actions(coord: Coordinator) -> list[dict]:
         out.append({"strategy": "csp", "side": "sell_to_open", **trade})
     for trade in (cycle.get("cc_trades") or []):
         out.append({"strategy": "covered_call", "side": "sell_to_open", **trade})
+
+    # The scalper is a fifth of the account; a report that omits it is wrong by
+    # omission rather than merely thin.
+    agent = getattr(coord, "_vampire_agent", None)
+    if agent is not None and hasattr(agent, "activity_summary"):
+        try:
+            for row in agent.activity_summary():
+                if row.get("trades") or row.get("net_position"):
+                    out.append({
+                        "strategy": "vampire",
+                        "symbol": row["symbol"],
+                        "side": f"{row['trades']} trades, net {row['net_position']:+d}",
+                        "realized_pnl": row.get("realized_pnl"),
+                        "reason": f"scalper {row.get('state')}",
+                    })
+        except Exception:
+            log.warning("could not read vampire activity", exc_info=True)
     return out
+
+
+def _recent_rejections(coord: Coordinator) -> list[dict]:
+    """Why the options scanner refused what it refused."""
+    csp = getattr(getattr(coord, "_options_agent", None), "_csp", None)
+    return list(getattr(csp, "last_rejections", []) or [])
 
 
 def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
@@ -74,7 +97,7 @@ def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
                          "unrealized": s.unrealized, "positions": s.positions}
                      for n, s in sleeves.items()},
             actions=_recent_actions(coord),
-            rejections=[],
+            rejections=_recent_rejections(coord),
         )
         story = summarise_session(request) if closing else narrate(request)
         if story:

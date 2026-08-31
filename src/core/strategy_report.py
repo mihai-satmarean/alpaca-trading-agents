@@ -58,6 +58,12 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
     return sleeves
 
 
+def _plain(value) -> str:
+    """alpaca-py returns enums whose str() is 'OrderSide.SELL'. Reports are read
+    on a phone; show the value, not the type."""
+    return str(getattr(value, "value", value)).lower()
+
+
 def describe_orders(orders) -> list[str]:
     """Working orders, which are invisible in a positions-only view.
 
@@ -74,7 +80,7 @@ def describe_orders(orders) -> list[str]:
             limit = getattr(o, "limit_price", None) or o.get("limit_price")
             status = getattr(o, "status", None) or o.get("status")
             price = f" @ {float(limit):.2f}" if limit else ""
-            lines.append(f"  {sym} {side} {qty}{price} · {status}")
+            lines.append(f"  {sym} {_plain(side)} {qty}{price} · {_plain(status)}")
         except Exception:
             log.warning("could not render an order", exc_info=True)
     return lines

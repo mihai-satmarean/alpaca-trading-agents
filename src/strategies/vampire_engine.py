@@ -100,6 +100,23 @@ class VampireEngine:
         now = datetime.now(ZoneInfo("America/New_York")).time()
         return SESSION_START <= now <= SESSION_END
 
+    def reconcile(self, qty: int, avg_entry: float | None) -> None:
+        """Adopt the position the broker actually reports.
+
+        _net_position is process-local. Every restart reset it to zero while the
+        broker still held the shares, so the notional cap kept measuring a
+        position that had stopped being real: ten restarts in a morning took a
+        $20,000 sleeve to $137,000 of exposure without a single check failing,
+        because each check was asking about the wrong number.
+        """
+        self._net_position = int(qty)
+        self._avg_entry = float(avg_entry) if (avg_entry and qty) else (
+            self._avg_entry if qty else None
+        )
+        if qty:
+            log.info("%s: adopted broker position %+d at %s",
+                     self.cfg.symbol, qty, self._avg_entry)
+
     def _would_breach_notional(self, qty: int, price: float) -> bool:
         """True if adding qty would take this engine past its notional cap.
 

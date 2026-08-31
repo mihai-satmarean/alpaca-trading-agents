@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from src.core.config import get_config
 from src.core.position_tracker import PositionTracker
 
 log = logging.getLogger(__name__)
@@ -18,6 +19,18 @@ class RiskLimits:
     max_single_trade_pct: float = 0.05
     min_cash_reserve: float = 5000.0
     cooldown_minutes: int = 30
+
+    @classmethod
+    def from_config(cls) -> "RiskLimits":
+        r = get_config().risk
+        d = cls()
+        return cls(
+            max_daily_loss_pct=float(r.get("max_daily_loss_pct", d.max_daily_loss_pct)),
+            max_position_pct=float(r.get("max_position_pct", d.max_position_pct)),
+            max_single_trade_pct=float(r.get("max_single_trade_pct", d.max_single_trade_pct)),
+            min_cash_reserve=float(r.get("min_cash_reserve", d.min_cash_reserve)),
+            cooldown_minutes=int(r.get("circuit_breaker_cooldown_minutes", d.cooldown_minutes)),
+        )
 
 
 class CircuitBreaker:

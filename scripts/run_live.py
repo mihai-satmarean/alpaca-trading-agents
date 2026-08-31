@@ -9,6 +9,7 @@ single account P&L number is not the only signal available mid-session.
 from __future__ import annotations
 
 import logging
+import pathlib
 import signal
 import sys
 import threading
@@ -17,6 +18,10 @@ from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
+
+# Python puts the script's own directory on sys.path, not the working
+# directory, so `src` is not importable when run as scripts/run_live.py.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 load_dotenv()
 

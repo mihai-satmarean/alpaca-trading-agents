@@ -1,13 +1,16 @@
-# Agreed 2026-08-31 pre-market. CSP $20k, vampire $20k on a $100k account.
-# The remaining 60% is deliberately UNALLOCATED, not assigned to sixfold:
-# SixfoldAnalystAgent produces recommendations and places no orders, so
-# capital pointed at it would sit idle either way. Naming it reserve keeps the
-# books honest. Raise options_pct/vampire_pct, or add a sixfold sleeve, once
-# something acts on those recommendations.
+# Agreed 2026-08-31 pre-market: sixfold 50, CSP 20, vampire 20, buffer 10.
+#
+# The sixfold sleeve is reported but not yet deployable. SixfoldAnalystAgent
+# produces buy and disposal candidates and places no orders, so nothing draws
+# against this budget until something acts on those recommendations. It is
+# named here rather than folded into reserve on purpose: a sleeve showing
+# $50,000 allocated and $0 committed makes that gap visible, where a larger
+# reserve figure hid it.
 allocation:
+  sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
   vampire_pct: 0.20      # scalper, $20,000
-  reserve_pct: 0.60      # $60,000 uncommitted (Tashi's sleeve + buffer)
+  reserve_pct: 0.10      # buffer, $10,000
 
 vampire:
   symbols:

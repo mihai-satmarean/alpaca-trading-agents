@@ -183,3 +183,62 @@ def test_list_tools_returns_plain_strings():
     c = _client(reply={"result": {"tools": [{"name": "a", "description": "x"},
                                             {"name": "b", "description": "y"}]}})
     assert c.list_tools() == ["a", "b"]
+
+
+class TestTheServerIsLaunchedWithAWorkingDependencySet:
+    """fastmcp 4.0 moved fastmcp.tools.tool, which alpaca-mcp-server 2.3.0
+    imports at module scope. uvx resolves the newest fastmcp on every cold run,
+    so the server began dying at startup with no repo change at all. CSP
+    scanning was off from 14:47 on 2026-08-31 and the only evidence was one
+    ERROR line per restart, because the server's stderr went to DEVNULL.
+    """
+
+    def _popen_args(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import src.core.mcp_client as mod
+
+        seen = {}
+
+        def fake_popen(args, **kw):
+            seen["args"], seen["kw"] = args, kw
+            raise RuntimeError("stop before the handshake")
+
+        monkeypatch.setattr(mod.subprocess, "Popen", fake_popen)
+        c = mod.AlpacaMCPClient("k", "s")
+        try:
+            c.start()
+        except Exception:
+            pass
+        return seen
+
+    def test_fastmcp_is_pinned_below_4(self, monkeypatch):
+        args = self._popen_args(monkeypatch)["args"]
+        assert "--with" in args, "no dependency pin: uvx will resolve fastmcp 4"
+        assert args[args.index("--with") + 1] == "fastmcp<4"
+
+    def test_the_pin_precedes_the_package(self, monkeypatch):
+        """uvx reads options before the command; order is not cosmetic."""
+        args = self._popen_args(monkeypatch)["args"]
+        assert args.index("--with") < args.index("alpaca-mcp-server")
+
+    def test_stderr_is_captured_not_discarded(self, monkeypatch):
+        import subprocess as sp
+        kw = self._popen_args(monkeypatch)["kw"]
+        assert kw["stderr"] is sp.PIPE, "DEVNULL hides why the server died"
+
+    def test_the_failure_message_carries_the_servers_own_words(self):
+        from unittest.mock import MagicMock
+        from src.core.mcp_client import AlpacaMCPClient
+        c = AlpacaMCPClient("k", "s")
+        proc = MagicMock()
+        proc.stderr.read.return_value = (
+            "Traceback (most recent call last):\n"
+            "ModuleNotFoundError: No module named 'fastmcp.tools.tool'\n"
+        )
+        c._process = proc
+        assert "fastmcp.tools.tool" in c._stderr_tail()
+
+    def test_stderr_tail_never_raises(self):
+        from src.core.mcp_client import AlpacaMCPClient
+        c = AlpacaMCPClient("k", "s")
+        assert c._stderr_tail() == "(no stderr captured)"

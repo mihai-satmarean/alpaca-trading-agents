@@ -50,6 +50,7 @@ class OptionsIncomeAgent:
         self._allocator = allocator
 
         self._mcp: AlpacaMCPClient | None = None
+        self.last_cycle: dict = {}          # read by the reporter for narration
         self._csp = CashSecuredPutStrategy(
             self._alpaca, self._chain, data, tracker,
             allocator=allocator, breaker=breaker,
@@ -108,6 +109,7 @@ class OptionsIncomeAgent:
             len(csp_trades),
             len(cc_trades),
         )
+        self.last_cycle = results
         return results
 
     def _is_market_open(self) -> bool:

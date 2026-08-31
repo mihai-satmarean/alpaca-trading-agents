@@ -41,10 +41,41 @@ class VampireAgent:
         symbols = symbols or ["SPY"]
         overrides = config_overrides or {}
 
+        self._symbols = list(symbols)
+        self._overrides = overrides
         self._engines: dict[str, VampireEngine] = {}
         for sym in symbols:
             cfg = VampireConfig(symbol=sym, **overrides)
             self._engines[sym] = VampireEngine(client, data, tracker, cfg)
+
+    def _apply_sleeve_limits(self) -> None:
+        """Split the vampire sleeve across its symbols and cap each engine.
+
+        Without this the sleeve is advisory: the budget is read once at startup
+        and the engines then accumulate independently to max_position.
+        """
+        budget = self._allocator.get_budget().vampire_budget
+        if not budget or not self._engines:
+            return
+        per_symbol = budget / len(self._engines)
+
+        for sym, engine in self._engines.items():
+            engine.cfg.max_notional = per_symbol
+            try:
+                quote = self._data.get_latest_quote(sym)
+                price = quote.mid if quote else None
+            except Exception:
+                price = None
+            if price and price > 0:
+                shares = int(per_symbol // price)
+                engine.cfg.max_position = max(0, min(engine.cfg.max_position, shares))
+                engine.cfg.position_size = max(
+                    1, min(engine.cfg.position_size, engine.cfg.max_position or 1)
+                )
+            log.info(
+                "%s sleeve cap $%.0f -> max_position %d, position_size %d",
+                sym, per_symbol, engine.cfg.max_position, engine.cfg.position_size,
+            )
 
     def get_status(self) -> dict:
         status = {}
@@ -67,6 +98,8 @@ class VampireAgent:
         if budget.vampire_available < 500:
             log.warning("Insufficient vampire budget ($%.0f), not starting", budget.vampire_available)
             return
+
+        self._apply_sleeve_limits()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)

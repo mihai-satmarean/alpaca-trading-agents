@@ -53,6 +53,7 @@ class VampireConfig:
     bleed_window_seconds: int = 5
     max_daily_loss: float = 50.0
     max_trades_per_min: int = 20
+    max_notional: float | None = None   # hard cap on |position| x price
 
 
 class VampireEngine:
@@ -98,6 +99,27 @@ class VampireEngine:
     def _is_market_hours(self) -> bool:
         now = datetime.now(ZoneInfo("America/New_York")).time()
         return SESSION_START <= now <= SESSION_END
+
+    def _would_breach_notional(self, qty: int, price: float) -> bool:
+        """True if adding qty would take this engine past its notional cap.
+
+        The agent checked the sleeve budget once at startup and never again, so
+        each engine could accumulate to max_position independently: three
+        symbols at 100 shares of a ~$700 name is roughly $180k of exposure
+        against a $20k sleeve on a $100k account. Sizing is bounded here rather
+        than by a check in the tick loop so it holds regardless of caller.
+        """
+        if not self.cfg.max_notional:
+            return False
+        projected = (abs(self._net_position) + qty) * price
+        if projected > self.cfg.max_notional:
+            log.debug(
+                "%s: %d + %d shares @ %.2f = $%.0f would breach the $%.0f cap",
+                self.cfg.symbol, abs(self._net_position), qty, price,
+                projected, self.cfg.max_notional,
+            )
+            return True
+        return False
 
     def _check_rate_limit(self) -> bool:
         now = time.time()
@@ -171,7 +193,8 @@ class VampireEngine:
                     self._avg_entry = None
                 self._record_bleed(qty, delta, "long_exit", realized)
 
-            elif abs(self._net_position) < self.cfg.max_position:
+            elif (abs(self._net_position) < self.cfg.max_position
+                  and not self._would_breach_notional(self.cfg.position_size, current_price)):
                 qty = self.cfg.position_size
                 self._sell_short(qty, current_price)
                 self._open_lot(qty, current_price, long=False)
@@ -188,7 +211,8 @@ class VampireEngine:
                     self._avg_entry = None
                 self._record_bleed(qty, abs(delta), "short_exit", realized)
 
-            elif self._net_position < self.cfg.max_position:
+            elif (self._net_position < self.cfg.max_position
+                  and not self._would_breach_notional(self.cfg.position_size, current_price)):
                 qty = self.cfg.position_size
                 self._buy(qty, current_price)
                 self._open_lot(qty, current_price, long=True)

@@ -13,14 +13,23 @@
 # while the broker reached 96, because the engine believed it had sold what it
 # still held and bought again.
 #
-# Re-enabled at HALF SIZE once the engine began counting only confirmed fills.
-# Ten percent rather than twenty because the fix is hours old and the strategy
-# has no clean session behind it; raise it after one that behaves.
+# OFF for the contest. Three breaches on 2026-08-31, the third AFTER fill
+# confirmation landed: it reached 271 AAPL and -176 SPY, $278,000 of exposure,
+# within about a minute of restarting at a $10,000 allocation.
+#
+# Two fixes have failed to contain it. Both diagnoses were correct about a real
+# defect and neither was sufficient, which means the remaining cause is not yet
+# understood. It fires up to twenty orders a minute, so the gap between a wrong
+# model and an unrecoverable book is about sixty seconds, and that is too short
+# to debug against a live account during a contest.
+#
+# Re-enable only after it runs a full session in a shadow book that places no
+# orders and its own position tracking is shown to match the broker throughout.
 allocation:
   sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
-  vampire_pct: 0.10      # scalper, $10,000: half size while execution proves out
-  reserve_pct: 0.20      # buffer
+  vampire_pct: 0.00      # OFF for the contest, see above
+  reserve_pct: 0.30      # buffer
 
 vampire:
   symbols:

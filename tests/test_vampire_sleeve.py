@@ -152,8 +152,8 @@ class TestZeroAllocationStopsIt:
         asyncio.run(a.run())
         data.subscribe_quotes.assert_not_called()
 
-    def test_repo_config_runs_it_at_half_size(self):
-        """Re-enabled at 10% after fill confirmation landed, not the original
-        20%: the fix is hours old and the strategy has no clean session yet."""
+    def test_repo_config_has_it_off(self):
+        """Off after three breaches in one session, the third with fill
+        confirmation in place. Two correct diagnoses, neither sufficient."""
         from src.core.config import load_config
-        assert load_config().vampire_pct == 0.10
+        assert load_config().vampire_pct == 0.0

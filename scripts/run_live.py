@@ -27,6 +27,7 @@ load_dotenv()
 
 from src.agents.coordinator import Coordinator  # noqa: E402
 from src.core.notify import fmt_money, notify  # noqa: E402
+from src.agents.narrator import NarrationRequest, narrate, summarise_session  # noqa: E402
 from src.core.strategy_report import build_report, render  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
@@ -41,10 +42,46 @@ def market_is_open() -> bool:
     return now.weekday() < 5 and OPEN <= now.time() <= CLOSE
 
 
-def report(coord: Coordinator, *, prefix: str = "", severity: str = "default") -> None:
+def _recent_actions(coord: Coordinator) -> list[dict]:
+    """Whatever the options agent placed on its most recent cycle.
+
+    Read off the agent rather than threaded through the coordinator, because the
+    agent owns its own loop and the reporter is a passive observer of it.
+    """
+    cycle = getattr(getattr(coord, "_options_agent", None), "last_cycle", None) or {}
+    out: list[dict] = []
+    for trade in (cycle.get("csp_trades") or []):
+        out.append({"strategy": "csp", "side": "sell_to_open", **trade})
+    for trade in (cycle.get("cc_trades") or []):
+        out.append({"strategy": "covered_call", "side": "sell_to_open", **trade})
+    return out
+
+
+def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
+           closing: bool = False) -> None:
     try:
         snap = coord._tracker.get_snapshot()
-        body = render(snap, build_report(snap))
+        sleeves = build_report(snap)
+        body = render(snap, sleeves)
+
+        # The narrative is additive. It is generated from the numbers above,
+        # after the fact, and its absence changes nothing but the prose.
+        request = NarrationRequest(
+            equity=snap.equity,
+            cash=snap.cash,
+            daily_pnl=snap.daily_pnl,
+            sleeves={n: {"committed": s.committed, "budget": s.budget,
+                         "unrealized": s.unrealized, "positions": s.positions}
+                     for n, s in sleeves.items()},
+            actions=_recent_actions(coord),
+            rejections=[],
+        )
+        story = summarise_session(request) if closing else narrate(request)
+        if story:
+            body = f"{body}\n\n---\n{story}"
+        else:
+            log.info("narration unavailable; reporting numbers only")
+
         notify(f"{prefix}Alpaca agent · {fmt_money(snap.daily_pnl)}", body,
                severity=severity, tags=["chart_with_upwards_trend"])
         log.info("reported: equity %.2f daily %.2f", snap.equity, snap.daily_pnl)
@@ -72,7 +109,7 @@ def main() -> int:
     def shutdown(signum, _frame):
         log.info("signal %s, shutting down", signum)
         stop.set()
-        report(coord, prefix="STOPPED · ", severity="high")
+        report(coord, prefix="STOPPED · ", severity="high", closing=True)
         try:
             coord.stop()
         finally:

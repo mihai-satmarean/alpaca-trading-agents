@@ -9,6 +9,7 @@ single account P&L number is not the only signal available mid-session.
 from __future__ import annotations
 
 import logging
+import os
 import pathlib
 import signal
 import sys
@@ -22,6 +23,17 @@ from dotenv import load_dotenv
 # Python puts the script's own directory on sys.path, not the working
 # directory, so `src` is not importable when run as scripts/run_live.py.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+
+# Some Python builds ship without a system CA bundle, and this one does. The
+# effect is invisible until something opens a TLS connection through a library
+# that builds its own SSL context: the market data websocket failed
+# CERTIFICATE_VERIFY_FAILED in a reconnect loop for minutes, which reads as "the
+# scalper is not trading" rather than as a TLS problem. Set it before any client
+# is constructed so every library inherits it.
+import certifi  # noqa: E402
+
+os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
 
 load_dotenv()
 

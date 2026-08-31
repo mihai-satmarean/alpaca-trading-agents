@@ -151,7 +151,7 @@ def main() -> int:
     def shutdown(signum, _frame):
         log.info("signal %s, shutting down", signum)
         stop.set()
-        report(coord, prefix="STOPPED · ", severity="high", closing=True)
+        report(coord, prefix="STOPPED · ", severity="low", closing=True)
         try:
             coord.stop()
         finally:
@@ -161,12 +161,15 @@ def main() -> int:
     signal.signal(signal.SIGTERM, shutdown)
 
     budget = coord._allocator.get_budget()
+    # Deliberately low priority: a restart is an operational event, and during
+    # a morning of deploys these buried the reports that actually mattered
+    # under a stack of start/stop pairs.
     notify(
         "Alpaca agent · session starting",
-        f"CSP ${budget.options_budget:,.0f} · Vampire ${budget.vampire_budget:,.0f} "
-        f"· Reserve ${budget.reserve_target:,.0f}\n\n"
+        f"SixFold ${budget.sixfold_budget:,.0f} · CSP ${budget.options_budget:,.0f} "
+        f"· Vampire ${budget.vampire_budget:,.0f} · Buffer ${budget.reserve_target:,.0f}\n\n"
         f"Equity ${budget.total_equity:,.2f}",
-        tags=["rocket"],
+        severity="low", tags=["rocket"],
     )
 
     # Start the checkpoint reporter immediately: 07:00 and 16:15 both sit

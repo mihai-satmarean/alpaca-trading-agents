@@ -65,3 +65,37 @@ class TestSecondsUntil:
 
     def test_never_negative(self):
         assert seconds_until(_at(2026, 8, 31, 9, 0), _at(2026, 8, 31, 12, 0)) == 0
+
+
+class TestCrossSleeveOverlapIsRejected:
+    """The scalper adopts whatever the broker holds in its symbols at startup
+    and flattens them at end of day. A symbol shared with another sleeve hands
+    that sleeve's positions to the scalper. AAPL sat one config edit away from
+    exactly this."""
+
+    def test_scalper_sharing_a_sixfold_name_is_a_problem(self):
+        from src.core.config import StrategyConfig
+
+        cfg = StrategyConfig(
+            allocation={"sixfold_pct": 0.5, "options_pct": 0.2,
+                        "vampire_pct": 0.05, "reserve_pct": 0.25},
+            vampire={"symbols": ["AAPL", "TQQQ"]},
+            sixfold={"universe": ["AAPL", "MSFT"]},
+        )
+        assert any("scalper and sixfold" in p for p in cfg.validate())
+
+    def test_scalper_sharing_a_csp_name_is_a_problem(self):
+        from src.core.config import StrategyConfig
+
+        cfg = StrategyConfig(
+            allocation={"sixfold_pct": 0.5, "options_pct": 0.2,
+                        "vampire_pct": 0.05, "reserve_pct": 0.25},
+            vampire={"symbols": ["MARA"]},
+            options={"symbols": ["MARA", "CLF"]},
+        )
+        assert any("scalper and CSP" in p for p in cfg.validate())
+
+    def test_the_repo_config_is_clean(self):
+        from src.core.config import load_config
+
+        assert load_config().validate() == []

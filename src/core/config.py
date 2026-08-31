@@ -84,6 +84,23 @@ class StrategyConfig:
             if not 0.0 <= pct <= 1.0:
                 problems.append(f"{name}={pct} is outside [0, 1]")
 
+        scalper = {x.upper() for x in self.vampire_symbols}
+        sixfold_universe = {x.upper() for x in (self.sixfold.get("universe") or [])}
+        shared = scalper & sixfold_universe
+        if shared:
+            problems.append(
+                f"scalper and sixfold share {sorted(shared)}: the scalper adopts "
+                f"whatever the broker holds in its symbols at startup and flattens "
+                f"them at end of day, so a shared symbol hands one sleeve's "
+                f"positions to the other"
+            )
+        shared_csp = scalper & {x.upper() for x in self.options_symbols}
+        if shared_csp:
+            problems.append(
+                f"scalper and CSP share {sorted(shared_csp)}: assigned shares "
+                f"would be adopted and flattened by the scalper"
+            )
+
         max_delta = self.csp.get("max_delta")
         if max_delta is not None and max_delta > 0:
             problems.append(

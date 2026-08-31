@@ -14,7 +14,7 @@ from src.core.config import get_config
 from src.core.market_data import MarketDataService
 from src.core.options_chain import OptionCandidate, OptionsChain
 from src.core.position_tracker import PositionTracker
-from src.strategies.csp_scoring import QuotedPut, ScoringConfig, rank
+from src.strategies.csp_scoring import QuotedPut, ScoringConfig, evaluate, rank
 
 log = logging.getLogger(__name__)
 
@@ -22,6 +22,8 @@ log = logging.getLogger(__name__)
 # symbol list can be sized to the sleeve without a code change; a hardcoded
 # list here silently outranked the config and had the scanner spending every
 # cycle on names whose collateral exceeds the whole allocation.
+MAX_REJECTIONS = 20   # a wide chain refuses hundreds; a notification carries a few
+
 CSP_SYMBOLS = ["CLF", "NIO", "F", "SOFI", "T"]
 
 
@@ -82,6 +84,7 @@ class CashSecuredPutStrategy:
         self.max_allocation_per_trade = max_allocation_per_trade
         self.max_delta = max_delta
         self._quote_provider = quote_provider
+        self.last_rejections: list[dict] = []   # read by the reporter for narration
         self._allocator = allocator
         self._breaker = breaker
 
@@ -98,9 +101,14 @@ class CashSecuredPutStrategy:
         to invent one.
         """
         symbols = symbols or default_symbols()
+        self.last_rejections = []
 
         if self._quote_provider is None:
             log.error("No option quote provider configured; refusing to scan CSPs")
+            self.last_rejections = [{
+                "symbol": "(all)",
+                "reason": "no option quote provider configured, so nothing could be priced",
+            }]
             return []
 
         cfg = ScoringConfig(
@@ -148,6 +156,15 @@ class CashSecuredPutStrategy:
             if not quoted:
                 log.info("No priced contracts for %s", sym)
                 continue
+
+            # Refusals are recorded, not just dropped: they are the evidence
+            # that the premium, liquidity and delta gates are doing anything.
+            for q in quoted:
+                verdict = evaluate(q, cfg)
+                if verdict.rejected and len(self.last_rejections) < MAX_REJECTIONS:
+                    self.last_rejections.append(
+                        {"symbol": q.symbol, "reason": verdict.rejected}
+                    )
 
             for ev in rank(quoted, cfg):
                 match = next((p for p in puts if p.symbol == ev.put.symbol), None)

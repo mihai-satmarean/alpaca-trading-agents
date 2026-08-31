@@ -77,6 +77,30 @@ class VampireAgent:
                 sym, per_symbol, engine.cfg.max_position, engine.cfg.position_size,
             )
 
+    def activity_summary(self) -> list[dict]:
+        """Per-symbol view of what the scalper actually did.
+
+        The engines hold this individually and nothing asked them, so reports
+        covered the options sleeve and silently omitted a fifth of the account.
+        Never raises: a report that dies takes the session's only visibility
+        with it.
+        """
+        rows: list[dict] = []
+        for sym, engine in self._engines.items():
+            try:
+                rows.append({
+                    "symbol": sym,
+                    "trades": len(engine.bleeds),
+                    "net_position": engine.net_position,
+                    "realized_pnl": round(engine.daily_pnl, 2),
+                    "state": engine.state.value,
+                })
+            except Exception:
+                log.warning("could not read vampire engine for %s", sym, exc_info=True)
+                rows.append({"symbol": sym, "trades": 0, "net_position": 0,
+                             "realized_pnl": 0.0, "state": "unknown"})
+        return rows
+
     def get_status(self) -> dict:
         status = {}
         for sym, engine in self._engines.items():

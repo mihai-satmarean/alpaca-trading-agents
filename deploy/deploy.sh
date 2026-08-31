@@ -17,9 +17,11 @@ git fetch -q origin
 git reset -q --hard origin/main
 ./.venv/bin/pip install -q -e ".[dev]"
 ./.venv/bin/python -m pytest tests/ -q 2>&1 | tail -2
-sudo systemctl restart alpaca-agent
+sudo systemctl restart alpaca-agent alpaca-watchdog
 sleep 6
-systemctl is-active --quiet alpaca-agent \
-  && echo "alpaca-agent: active at $(cd /opt/alpaca-agent && git rev-parse --short HEAD)" \
-  || { echo "alpaca-agent FAILED to start"; sudo journalctl -u alpaca-agent -n 30 --no-pager; exit 1; }
+for unit in alpaca-agent alpaca-watchdog; do
+  systemctl is-active --quiet "$unit" \
+    && echo "$unit: active at $(cd /opt/alpaca-agent && git rev-parse --short HEAD)" \
+    || { echo "$unit FAILED to start"; sudo journalctl -u "$unit" -n 30 --no-pager; exit 1; }
+done
 REMOTE

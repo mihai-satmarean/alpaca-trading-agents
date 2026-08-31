@@ -25,13 +25,17 @@
 # FILLED, because under-counting accumulates without bound while over-counting
 # only trades less. max_position is also a ceiling now rather than a trigger.
 #
-# Running at a QUARTER of the original 20% while it proves out. Raise only after
-# a full session where its position tracking matches the broker throughout.
+# Raised to half the original 20% on 2026-08-31 after the position-tracking
+# defects were found and fixed and the cap held all afternoon (peak 89% of
+# sleeve, never over). The sleeve is split evenly across symbols, so adding
+# QQQ and SPY at $5,000 would have left each of the four with $1,250, which
+# buys ONE share of a $715 QQQ. Four symbols need the larger sleeve to be
+# able to trade at all. Full 20% after one clean session end to end.
 allocation:
   sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
-  vampire_pct: 0.05      # scalper, $5,000: quarter size, proving run
-  reserve_pct: 0.25      # buffer
+  vampire_pct: 0.10      # scalper, $10,000: see the sizing note below
+  reserve_pct: 0.20      # buffer
 
 vampire:
   # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
@@ -69,14 +73,33 @@ vampire:
   # not evidence; a threshold set from one tight quote on a name like that
   # fires on flicker all day.
   #
-  # Configured: HOOD plus the two stable names with usable share granularity
-  # at the per-name budget (SPY and QQQ round to 1-2 shares at ~$1,671).
-  # HOOD's edge is condition-dependent (a momentum day); the spread-derived
-  # threshold keeps TQQQ/SOXL near-dormant unless a real move arrives.
+  # WHAT THE SESSION ACTUALLY SHOWED, 2026-08-31 close of business. The
+  # move/spread ranking above did not predict realized P&L, and the gap is not
+  # subtle:
+  #
+  #   QQQ    1,039 fills   +$187.99   ranked 0.72, made all the money
+  #   SPY    1,024 fills   -$  1.49   ranked 0.89, flat
+  #   HOOD      29 fills    ~flat     ranked 12.52, the top pick, produced nothing
+  #   TQQQ      27 fills    ~flat     ranked 0.74
+  #
+  # HOOD was also where the covering deadlock surfaced. One session is not a
+  # verdict on the metric, but a live P&L result on two thousand fills is
+  # stronger evidence than a 92-second pre-trade sample, and it points the
+  # other way. QQQ and SPY are therefore restored as the primary pair rather
+  # than dropped, and HOOD and TQQQ are kept so the comparison keeps running
+  # on real fills instead of on quotes.
+  #
+  # Read the ranking as a filter, not an ordering: it is good at rejecting
+  # names that cannot work (wide books, dead mids, the sub-$2 tick floor) and
+  # so far unproven at picking winners among the names that can.
   symbols:
+    - QQQ
+    - SPY
     - HOOD
     - TQQQ
-    - SOXL
+    # - SOXL   # removed 2026-08-31: shortable=false, easy_to_borrow=false.
+    #            A bi-directional scalper cannot run on a name with no borrow;
+    #            every short signal is a guaranteed venue refusal.
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

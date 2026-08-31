@@ -7,19 +7,20 @@ Trades both directions: buys dips, shorts rips.
 
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import time
 from collections import deque
-from dataclasses import dataclass, field
-from datetime import datetime, time as dt_time
+from dataclasses import dataclass
+from datetime import datetime
+from datetime import time as dt_time
 from enum import Enum
 from zoneinfo import ZoneInfo
 
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 from src.core.alpaca_client import AlpacaClient
-from src.core.market_data import MarketDataService, Quote
+from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 
 log = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ class VampireEngine:
         self._last_fill_price: float | None = None
         self._avg_entry: float | None = None
         self._realized_pnl: float = 0.0
+        self._reject_streak: int = 0
+        self._reject_cooldown_until: float = 0.0
 
     @property
     def state(self) -> VampireState:
@@ -181,9 +184,93 @@ class VampireEngine:
         )
         self._trade_timestamps.append(time.time())
 
+    REJECT_STREAK_TRIP = 5
+    REJECT_BACKOFF_BASE = 2.0
+    REJECT_BACKOFF_MAX = 300.0
+
+    @staticmethod
+    def _reject_body(exc: Exception) -> str:
+        """Pull the venue's own error text out of whatever the SDK raised.
+
+        A bare traceback tells us an order was refused, not why. Alpaca puts the
+        reason in the response body, and the reason decides the fix: a wash-trade
+        block needs order spacing, a borrow failure needs the symbol dropped, and
+        insufficient buying power needs sizing. Without the body all three look
+        identical and the engine just retries forever.
+        """
+        resp = getattr(exc, "response", None)
+        for src in (getattr(resp, "text", None), str(exc)):
+            if src:
+                return str(src)[:400]
+        return type(exc).__name__
+
+    @staticmethod
+    def _reject_facts(exc: Exception) -> dict:
+        """Parse the venue's structured rejection into broker truth.
+
+        Alpaca refuses an oversized reducing order with a body that states the
+        real position and what may be sent right now:
+
+            {"available":"9","existing_qty":"9","held_for_orders":"0",
+             "message":"insufficient qty available for order (requested: 10, ...)"}
+
+        existing_qty is the true position; available is existing_qty minus the
+        shares already reserved by resting orders. They differ: one TQQQ refusal
+        read existing_qty 17, held_for_orders 13, available 4. Position state is
+        reconciled from the first, order size clamped by the second.
+        """
+        body = VampireEngine._reject_body(exc)
+        start, end = body.find("{"), body.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            raw = json.loads(body[start:end + 1])
+        except (ValueError, TypeError):
+            return {}
+        facts = {}
+        for key in ("available", "existing_qty"):
+            try:
+                facts[key] = int(float(raw[key]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        return facts
+
+    def _note_reject(self, exc: Exception, side) -> None:
+        """Record a refused submission and back off if they keep coming.
+
+        Rejects previously bypassed the rate limiter entirely, because only
+        _record_bleed appended to _trade_timestamps and a refused order never
+        reaches it. A symbol the venue refuses on every attempt therefore retried
+        at the full tick rate: 4,700 refusals in 29 minutes on 2026-08-31, which
+        rate-limited the whole account and blinded the watchdog and the reports.
+        Refusals now cost the same budget as fills, and a persistent streak
+        parks the symbol instead of hammering the venue.
+        """
+        self._reject_streak += 1
+        self._trade_timestamps.append(time.time())
+        log.warning(
+            "%s submit rejected for %s (streak %d): %s",
+            side, self.cfg.symbol, self._reject_streak, self._reject_body(exc),
+        )
+        if self._reject_streak >= self.REJECT_STREAK_TRIP:
+            over = self._reject_streak - self.REJECT_STREAK_TRIP
+            backoff = min(self.REJECT_BACKOFF_BASE * (2 ** over), self.REJECT_BACKOFF_MAX)
+            self._reject_cooldown_until = time.time() + backoff
+            log.error(
+                "%s: %d consecutive rejects, pausing %.0fs",
+                self.cfg.symbol, self._reject_streak, backoff,
+            )
+
+    def _clear_rejects(self) -> None:
+        self._reject_streak = 0
+        self._reject_cooldown_until = 0.0
+
     def tick(self, current_price: float, vwap: float | None = None):
         """Process one price tick. Core bi-directional logic from the spec."""
         if self._state == VampireState.STOPPED:
+            return
+
+        if time.time() < self._reject_cooldown_until:
             return
 
         if not self._is_market_hours():
@@ -285,14 +372,37 @@ class VampireEngine:
         case that returns zero is a submission the venue never accepted, where
         nothing can fill because nothing arrived.
         """
-        try:
-            order = self._client.market_order(
-                self.cfg.symbol, qty, side, TimeInForce.IOC
-            )
-        except Exception:
-            log.warning("%s submit rejected for %s", side, self.cfg.symbol,
-                        exc_info=True)
-            return 0
+        order = None
+        for attempt in (0, 1):
+            try:
+                order = self._client.market_order(
+                    self.cfg.symbol, qty, side, TimeInForce.IOC
+                )
+                break
+            except Exception as exc:
+                self._note_reject(exc, side)
+                facts = self._reject_facts(exc)
+
+                # The refusal carries the truth this engine got wrong. Adopt it
+                # rather than retrying the same oversized order: an over-stated
+                # position asks for more than exists and is refused every time,
+                # which is a permanent deadlock, not a transient failure.
+                existing = facts.get("existing_qty")
+                if existing is not None and abs(self._net_position) != existing:
+                    corrected = existing if self._net_position >= 0 else -existing
+                    log.warning(
+                        "%s: counter said %d, venue says %d; adopting venue",
+                        self.cfg.symbol, self._net_position, corrected,
+                    )
+                    self._net_position = corrected
+
+                available = facts.get("available")
+                if attempt == 0 and available is not None and 1 <= available < qty:
+                    qty = available
+                    continue
+                return 0
+
+        self._clear_rejects()
 
         if self._is_terminal(getattr(order, "status", None)):
             return self._filled_or(order, qty)

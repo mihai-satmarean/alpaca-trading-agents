@@ -214,9 +214,12 @@ class VampireEngine:
                         self._avg_entry = None
                     self._record_bleed(qty, delta, "long_exit", realized)
 
-            elif (abs(self._net_position) < self.cfg.max_position
-                  and not self._would_breach_notional(self.cfg.position_size, current_price)):
-                qty = self._submit(self.cfg.position_size, current_price, OrderSide.SELL)
+            elif abs(self._net_position) < self.cfg.max_position:
+                room = self.cfg.max_position - abs(self._net_position)
+                want = min(self.cfg.position_size, room)
+                if want < 1 or self._would_breach_notional(want, current_price):
+                    want = 0
+                qty = self._submit(want, current_price, OrderSide.SELL) if want else 0
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "sell_short", qty,
@@ -239,9 +242,12 @@ class VampireEngine:
                         self._avg_entry = None
                     self._record_bleed(qty, abs(delta), "short_exit", realized)
 
-            elif (self._net_position < self.cfg.max_position
-                  and not self._would_breach_notional(self.cfg.position_size, current_price)):
-                qty = self._submit(self.cfg.position_size, current_price, OrderSide.BUY)
+            elif self._net_position < self.cfg.max_position:
+                room = self.cfg.max_position - self._net_position
+                want = min(self.cfg.position_size, room)
+                if want < 1 or self._would_breach_notional(want, current_price):
+                    want = 0
+                qty = self._submit(want, current_price, OrderSide.BUY) if want else 0
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "buy", qty,
@@ -261,37 +267,70 @@ class VampireEngine:
             self._flatten_all("circuit_breaker")
             self._state = VampireState.STOPPED
 
+    POLL_TIMEOUT = 2.0        # IOC resolves in ~100ms; this is a generous ceiling
+    POLL_INTERVAL = 0.05
+
     def _submit(self, qty: int, price: float, side: OrderSide) -> int:
         """Place an IOC order and return the quantity that actually filled.
 
-        The engine used to assume every order filled. IOC orders frequently do
-        not, so the position counter drifted from the broker within a single
-        session: it believed it had sold what it still held, and bought again.
-        Anything unconfirmed counts as zero, which errs toward believing we hold
-        MORE than we do and therefore toward trading less.
+        Alpaca returns the order with filled_qty "0" and status "new"; the fill
+        lands roughly 85 to 100 milliseconds later. Reading filled_qty off the
+        submit response therefore always saw zero, so the engine concluded
+        nothing had filled, left its counter at zero, and bought again on the
+        next tick while every one of those orders filled. That is how one symbol
+        reached 271 shares against a 21-share cap.
+
+        An UNKNOWN fill is assumed to be a FULL fill. Under-counting accumulates
+        without bound; over-counting only makes the engine trade less. The one
+        case that returns zero is a submission the venue never accepted, where
+        nothing can fill because nothing arrived.
         """
         try:
             order = self._client.market_order(
                 self.cfg.symbol, qty, side, TimeInForce.IOC
             )
         except Exception:
-            log.warning("%s order failed for %s", side, self.cfg.symbol, exc_info=True)
+            log.warning("%s submit rejected for %s", side, self.cfg.symbol,
+                        exc_info=True)
             return 0
 
-        filled = getattr(order, "filled_qty", None)
-        if filled is None:
-            oid = getattr(order, "id", None)
-            if oid is not None:
-                try:
-                    filled = getattr(self._client.get_order(str(oid)), "filled_qty", 0)
-                except Exception:
-                    log.warning("could not confirm fill for %s", self.cfg.symbol,
-                                exc_info=True)
-                    return 0
+        if self._is_terminal(getattr(order, "status", None)):
+            return self._filled_or(order, qty)
+
+        oid = getattr(order, "id", None)
+        if oid is None:
+            log.warning("%s: order carries no id; assuming it filled", self.cfg.symbol)
+            return qty
+
+        deadline = time.time() + self.POLL_TIMEOUT
+        while time.time() < deadline:
+            time.sleep(self.POLL_INTERVAL)
+            try:
+                polled = self._client.get_order(str(oid))
+            except Exception:
+                log.warning("%s: cannot read order %s; assuming it filled",
+                            self.cfg.symbol, oid, exc_info=True)
+                return qty
+            if self._is_terminal(getattr(polled, "status", None)):
+                return self._filled_or(polled, qty)
+
+        log.warning("%s: order %s did not resolve in %.1fs; assuming it filled",
+                    self.cfg.symbol, oid, self.POLL_TIMEOUT)
+        return qty
+
+    @staticmethod
+    def _is_terminal(status) -> bool:
+        text = str(getattr(status, "value", status) or "").lower()
+        return any(k in text for k in
+                   ("filled", "canceled", "cancelled", "rejected", "expired", "done"))
+
+    @staticmethod
+    def _filled_or(order, fallback: int) -> int:
+        """Read filled_qty from a resolved order. Unreadable means assume filled."""
         try:
-            return int(float(filled or 0))
+            return int(float(getattr(order, "filled_qty", None)))
         except (TypeError, ValueError):
-            return 0
+            return fallback
 
     def _buy(self, qty: int, price: float):
         try:

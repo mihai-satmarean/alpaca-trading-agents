@@ -98,7 +98,10 @@ class OptionsIncomeAgent:
 
         results = {"csp_trades": [], "cc_trades": [], "status": "ok"}
 
-        csp_trades = self._csp.execute_best(max_trades=2, budget=budget.options_available)
+        # Two per cycle left the sleeve at $6,000 of $20,000 with 37 qualifying
+        # contracts on the board. The binding constraint should be the sleeve
+        # budget and the concentration cap, not an arbitrary per-cycle count.
+        csp_trades = self._csp.execute_best(max_trades=8, budget=budget.options_available)
         results["csp_trades"] = csp_trades
 
         cc_trades = self._cc.execute_best(max_trades=2)

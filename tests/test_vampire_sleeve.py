@@ -30,6 +30,9 @@ def _filling_client(fill=None):
 
     def _order(symbol, qty, side, tif=None):
         o = _MM()
+        # A terminal status matters: without it _submit polls to timeout, which
+        # is correct behaviour and makes the suite wall-clock bound.
+        o.status = "filled"
         o.filled_qty = str(qty if fill is None else fill)
         o.id = "test-order"
         return o
@@ -152,8 +155,47 @@ class TestZeroAllocationStopsIt:
         asyncio.run(a.run())
         data.subscribe_quotes.assert_not_called()
 
-    def test_repo_config_has_it_off(self):
-        """Off after three breaches in one session, the third with fill
-        confirmation in place. Two correct diagnoses, neither sufficient."""
+    def test_repo_config_runs_it_at_quarter_size(self):
+        """Re-enabled at 5% after the audit found the real cause. A quarter of
+        the original allocation, because it has three breaches behind it and one
+        session of correct behaviour ahead of it."""
         from src.core.config import load_config
-        assert load_config().vampire_pct == 0.0
+        assert load_config().vampire_pct == 0.05
+
+
+class TestSpreadAwareThresholds:
+    """A flat $0.02 trigger sits below the spread on most liquid names, so every
+    trade it fires is negative before it begins."""
+
+    def _agent(self, spread, price=700.0):
+        from unittest.mock import MagicMock
+        from src.agents.vampire import VampireAgent
+        client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
+        q = MagicMock(); q.bid = price - spread / 2; q.ask = price + spread / 2; q.mid = price
+        data.get_latest_quote.return_value = q
+        allocator.get_budget.return_value = MagicMock(vampire_budget=5_000.0)
+        tracker.get_snapshot.return_value = MagicMock(positions={})
+        return VampireAgent(client, data, tracker, breaker, allocator, symbols=["SPY"])
+
+    def test_threshold_scales_with_the_spread(self):
+        a = self._agent(spread=0.06)
+        a._apply_spread_thresholds()
+        assert a._engines["SPY"].cfg.tick_threshold == pytest.approx(0.15)
+
+    def test_a_wider_spread_demands_a_bigger_move(self):
+        narrow = self._agent(spread=0.02); narrow._apply_spread_thresholds()
+        wide = self._agent(spread=0.50); wide._apply_spread_thresholds()
+        assert (wide._engines["SPY"].cfg.tick_threshold
+                > narrow._engines["SPY"].cfg.tick_threshold)
+
+    def test_threshold_always_exceeds_a_round_trip(self):
+        for spread in (0.01, 0.05, 0.30, 1.00):
+            a = self._agent(spread=spread); a._apply_spread_thresholds()
+            assert a._engines["SPY"].cfg.tick_threshold > spread * 2
+
+    def test_a_missing_quote_keeps_the_configured_threshold(self):
+        a = self._agent(spread=0.06)
+        a._data.get_latest_quote.return_value = None
+        before = a._engines["SPY"].cfg.tick_threshold
+        a._apply_spread_thresholds()
+        assert a._engines["SPY"].cfg.tick_threshold == before

@@ -13,29 +13,70 @@
 # while the broker reached 96, because the engine believed it had sold what it
 # still held and bought again.
 #
-# OFF for the contest. Three breaches on 2026-08-31, the third AFTER fill
-# confirmation landed: it reached 271 AAPL and -176 SPY, $278,000 of exposure,
-# within about a minute of restarting at a $10,000 allocation.
+# Three breaches on 2026-08-31. Root cause found on the third audit and it was
+# the second fix: Alpaca returns a market order with filled_qty "0" and status
+# "new", and the fill lands 85 to 100ms later. Reading filled_qty off the submit
+# response therefore always saw zero, so the counter never moved, the engine
+# believed it was flat, and it bought again every tick while every order filled.
+# The first two "fixes" were real defects that were not the cause; the second
+# one made it worse, taking the worst breach from 96 shares to 271.
 #
-# Two fixes have failed to contain it. Both diagnoses were correct about a real
-# defect and neither was sufficient, which means the remaining cause is not yet
-# understood. It fires up to twenty orders a minute, so the gap between a wrong
-# model and an unrecoverable book is about sixty seconds, and that is too short
-# to debug against a live account during a contest.
+# _submit now polls to a terminal status, and an UNKNOWN outcome is assumed
+# FILLED, because under-counting accumulates without bound while over-counting
+# only trades less. max_position is also a ceiling now rather than a trigger.
 #
-# Re-enable only after it runs a full session in a shadow book that places no
-# orders and its own position tracking is shown to match the broker throughout.
+# Running at a QUARTER of the original 20% while it proves out. Raise only after
+# a full session where its position tracking matches the broker throughout.
 allocation:
   sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
-  vampire_pct: 0.00      # OFF for the contest, see above
-  reserve_pct: 0.30      # buffer
+  vampire_pct: 0.05      # scalper, $5,000: quarter size, proving run
+  reserve_pct: 0.25      # buffer
 
 vampire:
+  # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
+  # is movement LARGER than the spread it pays to capture it. Sampling 18 liquid
+  # names live gave move-per-2.5s divided by spread: PLTR 1.00, SPY 0.84,
+  # QQQ 0.81, and under 0.6 for everything else including AAPL at 0.19.
+  #
+  # Two directions were tested and both make it worse.
+  #
+  # Volatile names: spreads widen with volatility. TSLA quotes $0.49 and AMD
+  # $4.91, giving ratios of 0.09 and 0.00.
+  #
+  # Cheap names, the BlackBerry thesis: worse still, because the $0.01 minimum
+  # tick is a FIXED floor and therefore a larger fraction of a smaller price.
+  # Measured as spread in basis points of price: SNDL at $1.35 pays 74bp, PLUG
+  # at $2.15 pays 47bp, AMC at $2.62 pays 38bp, BB at $8.07 pays 12bp, against
+  # SPY at 1bp. A scalper on a $2 stock pays roughly 40 times the relative
+  # spread it pays on SPY. Over 40 seconds of live sampling, most of those names
+  # did not move their mid at all: BB scored 0.05, and eleven of them scored
+  # 0.00.
+  #
+  # These three are the least bad measured, and none of them clears 1.5.
+  # Round two, 2026-08-31 ~13:45 ET: 26 candidates, 92s sample, then an
+  # independent 48s confirmation of the shortlist. Ranked by move/spread:
+  #
+  #   HOOD 12.52 then 7.57  confirmed, tight 4-5bp book while genuinely moving
+  #   SPY   0.77 then 0.89  stable, sub-1
+  #   TQQQ  0.47 then 0.74  stable penny spread
+  #   QQQ   0.49 then 0.72  stable
+  #   SOXL  0.47 then 0.60  stable
+  #
+  # PLTR (1.50 -> 0.26) and VST (1.95 -> 0.18) were DISQUALIFIED: their IEX
+  # spreads blew out 13x and 67x between samples, so their first-round ratios
+  # were book instability, not capturable movement. A single-sample ratio is
+  # not evidence; a threshold set from one tight quote on a name like that
+  # fires on flicker all day.
+  #
+  # Configured: HOOD plus the two stable names with usable share granularity
+  # at the per-name budget (SPY and QQQ round to 1-2 shares at ~$1,671).
+  # HOOD's edge is condition-dependent (a momentum day); the spread-derived
+  # threshold keeps TQQQ/SOXL near-dormant unless a real move arrives.
   symbols:
-    - SPY
-    - QQQ
-    - AAPL
+    - HOOD
+    - TQQQ
+    - SOXL
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

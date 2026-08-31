@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
+import time
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService, Quote
@@ -13,6 +15,17 @@ from src.risk.circuit_breakers import CircuitBreaker
 from src.risk.allocation import AllocationManager
 
 log = logging.getLogger(__name__)
+
+# A round trip pays the spread twice. Below about 2x there is no room for the
+# move to cover the cost, let alone to profit.
+SPREAD_MULTIPLE = 2.5
+
+# Never let a threshold be set below this, whatever the sampled spread says. A
+# single tight quote on an unstable book (PLTR read 0.04 at startup and traded
+# 0.915 wide twenty minutes later) would otherwise arm the engine to fire on
+# quote flicker all session.
+MIN_TICK_THRESHOLD = 0.02
+SPREAD_SAMPLES = 5
 
 
 class VampireAgent:
@@ -65,6 +78,43 @@ class VampireAgent:
                 engine.reconcile(qty, float(avg) if avg else None)
             except Exception:
                 log.warning("could not reconcile %s", sym, exc_info=True)
+
+    def _apply_spread_thresholds(self) -> None:
+        """Set each engine's trigger from its own spread, not a flat number.
+
+        A round trip crosses the spread on entry and again on exit, so a fixed
+        $0.02 trigger is below the spread on most liquid names and every trade
+        it fires is negative before it starts. Measured live on 2026-08-31, the
+        average 2.5-second move divided by the spread was 1.00 for PLTR, 0.84
+        for SPY and 0.81 for QQQ, and below 0.6 for everything else sampled.
+
+        Setting the trigger to a multiple of the spread makes the engine trade
+        rarely and only when the move on offer exceeds what it costs to take it.
+        """
+        for sym, engine in self._engines.items():
+            spreads: list[float] = []
+            for _ in range(SPREAD_SAMPLES):
+                try:
+                    quote = self._data.get_latest_quote(sym)
+                    if quote:
+                        sp = float(quote.ask) - float(quote.bid)
+                        if sp > 0:
+                            spreads.append(sp)
+                except Exception:
+                    log.warning("quote read failed for %s", sym, exc_info=True)
+                time.sleep(0.2)
+            if not spreads:
+                log.warning("no usable quotes for %s; keeping its configured threshold", sym)
+                continue
+            # Median across several reads, not one read: a single quote can
+            # catch a momentarily tight book on a name whose spread regime is
+            # 10x wider, and the threshold it produces fires on flicker.
+            spread = statistics.median(spreads)
+            engine.cfg.tick_threshold = round(
+                max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4
+            )
+            log.info("%s median spread %.3f (%d reads) -> tick_threshold %.4f",
+                     sym, spread, len(spreads), engine.cfg.tick_threshold)
 
     def _apply_sleeve_limits(self) -> None:
         """Split the vampire sleeve across its symbols and cap each engine.
@@ -150,6 +200,7 @@ class VampireAgent:
             return
 
         self._apply_sleeve_limits()
+        self._apply_spread_thresholds()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)

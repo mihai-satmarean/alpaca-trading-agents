@@ -155,8 +155,8 @@ class TestConfigDrivesBehaviour:
         """
         cfg = load_config()
         assert (cfg.sixfold_pct, cfg.options_pct) == (0.50, 0.20)
-        assert cfg.vampire_pct == 0.0, "scalper is off for the contest after three breaches"
-        assert cfg.reserve_pct == 0.30
+        assert cfg.vampire_pct == 0.05, "scalper at quarter size on a proving run"
+        assert cfg.reserve_pct == 0.25
 
     def test_sixfold_budget_is_reported_even_though_it_cannot_trade(self):
         """The sleeve is named so the gap is visible. Folding it into reserve
@@ -195,7 +195,7 @@ class TestGatesAreActuallyCalled:
     passed, while no production code path called either. These assert the wiring
     itself, which is the part that was missing."""
 
-    def _strategy(self, allocator, breaker, cash_required=45_000.0):
+    def _strategy(self, allocator, breaker, cash_required=12_000.0):
         from datetime import date, timedelta
 
         from src.core.options_chain import OptionCandidate
@@ -239,7 +239,7 @@ class TestGatesAreActuallyCalled:
         strat, client = self._strategy(allocator, breaker)
         executed = strat.execute_best(max_trades=2)
 
-        allocator.can_allocate_options.assert_called_once_with(45_000.0)
+        allocator.can_allocate_options.assert_called_once_with(12_000.0)
         client.trading.submit_order.assert_not_called()
         assert executed == []
 
@@ -253,7 +253,7 @@ class TestGatesAreActuallyCalled:
         strat, client = self._strategy(allocator, breaker)
         executed = strat.execute_best(max_trades=2)
 
-        breaker.can_trade.assert_called_once_with("SPY241220P00450000", 45_000.0)
+        breaker.can_trade.assert_called_once_with("SPY241220P00450000", 12_000.0)
         client.trading.submit_order.assert_not_called()
         assert executed == []
 
@@ -269,21 +269,24 @@ class TestGatesAreActuallyCalled:
 
         client.trading.submit_order.assert_called_once()
         assert len(executed) == 1
-        assert executed[0]["collateral"] == pytest.approx(45_000.0)
+        assert executed[0]["collateral"] == pytest.approx(12_000.0)
 
     def test_running_total_stops_a_second_order_that_would_overrun(self):
-        """Two 45k puts against an 80k sleeve: the second must be refused even
-        though each passes on its own."""
+        """Two 12k puts in the same underlying: the second is refused by the
+        concentration cap, which binds before the sleeve total does."""
         allocator = MagicMock()
         allocator.get_budget.return_value = MagicMock(options_available=80_000.0)
         allocator.can_allocate_options.return_value = True
         breaker = MagicMock()
         breaker.can_trade.return_value = True
 
-        strat, client = self._strategy(allocator, breaker)
+        # 30% of the 80k sleeve is 24k, so two 13k puts in one underlying put
+        # 26k into a single name and the second must be refused.
+        strat, client = self._strategy(allocator, breaker, cash_required=13_000.0)
         one = strat.scan()[0]
         strat.scan = lambda symbols=None: [one, one]
 
         executed = strat.execute_best(max_trades=5)
-        assert len(executed) == 1
+        assert len(executed) == 1, "the second must be refused"
         assert client.trading.submit_order.call_count == 1
+        assert any("concentration" in r["reason"] for r in strat.last_rejections)

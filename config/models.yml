@@ -2,24 +2,51 @@ litellm_proxy:
   base_url: "http://100.69.81.102:4000/v1"
 
 models:
+  # --- Development models ---
   primary_coder:
     name: dell4-devstral
-    description: "Devstral-Small-2-24B -- primary coding, complex reasoning"
-    context_window: 131072
+    description: "Devstral-Small-2-24B -- primary coding, 68% SWE-bench"
+    context_window: 262144
 
   reviewer:
     name: dell4-coder
-    description: "Qwen3-Coder-30B -- code review, fast iterations"
+    description: "Qwen3-Coder-30B MoE -- code review, fast iterations"
     context_window: 262144
+
+  coding_agent:
+    name: dell4-ornith
+    description: "Ornith-1.0-35B FP8 MoE -- 75.6% SWE-bench Verified, agentic coding"
+    context_window: 16384
+
+  # --- Runtime trading models ---
+  finance:
+    name: dell4-finance
+    description: "Fin-R1 7B -- financial reasoning, SOTA on FinQA/FinanceBench"
+    context_window: 8192
+    use_cases:
+      - CSP candidate evaluation
+      - SIXFOLD score commentary
+      - risk assessment narration
+      - earnings impact analysis
 
   reasoning:
     name: dell4-chat
-    description: "Qwen3.6-35B -- general reasoning, analysis"
+    description: "Qwen3.6-35B MoE -- general reasoning, analysis"
+    context_window: 262144
+
+  multimodal:
+    name: dell4-qwen38
+    description: "Qwen3.8-27B dense -- multimodal, 61.7% SWE-bench Pro, vision"
     context_window: 131072
+
+  toolcall:
+    name: dell4-toolcall
+    description: "Qwen3.6-27B dense -- tool-calling, function routing"
+    context_window: 32768
 
   fast:
     name: dell4-fast
-    description: "Qwen3.5-9B -- quick classification, routing"
+    description: "Qwen3.8-27B (alias) -- quick responses"
     context_window: 131072
 
   embedding:

@@ -17,19 +17,26 @@ from src.agents.risk_manager import RiskManagerAgent
 
 
 class _FakeNow:
-    """Pins datetime.now() inside the module under test."""
+    """Pins datetime.now(tz) inside the module under test.
+
+    The implementation asks for Eastern explicitly, so the fake has to accept
+    the tzinfo argument and return an aware datetime.
+    """
 
     def __init__(self, hh, mm, day=15):
-        self._dt = datetime(2026, 9, day, hh, mm)
+        self._hh, self._mm, self._day = hh, mm, day
 
-    def now(self):
-        return self._dt
+    def now(self, tz=None):
+        return datetime(2026, 9, self._day, self._hh, self._mm, tzinfo=tz)
 
 
-def _agent(positions=None):
+def _agent(positions=None, market_open=True):
     client = MagicMock()
     client.get_positions.return_value = positions or []
+    client.get_clock.return_value = MagicMock(is_open=market_open)
     agent = RiskManagerAgent(client, MagicMock(), MagicMock(), MagicMock())
+    agent._alpaca = client
+    agent._client = client
     agent._intraday_symbols = {"SPY", "QQQ", "AAPL"}
     return agent, client
 
@@ -105,3 +112,25 @@ class TestFlattenScope:
         agent, client = _agent([_pos("SPY"), _pos("SPY241220P00450000")])
         agent.emergency_flatten_all()
         client.close_all_positions.assert_called_once()
+
+
+class TestBrokerClockGate:
+    """main's contribution: never flatten when the market is not open."""
+
+    def test_closed_market_does_not_flatten(self, monkeypatch):
+        agent, _ = _agent(market_open=False)
+        monkeypatch.setattr(rm, "datetime", _FakeNow(15, 55))
+        assert agent.should_flatten_eod() is False
+
+    def test_open_market_inside_the_window_does_flatten(self, monkeypatch):
+        agent, _ = _agent(market_open=True)
+        monkeypatch.setattr(rm, "datetime", _FakeNow(15, 55))
+        assert agent.should_flatten_eod() is True
+
+    def test_clock_failure_falls_back_to_a_weekday_check(self, monkeypatch):
+        agent, client = _agent()
+        client.get_clock.side_effect = RuntimeError("broker down")
+        monkeypatch.setattr(rm, "datetime", _FakeNow(15, 55, day=19))   # Saturday
+        assert agent.should_flatten_eod() is False
+        monkeypatch.setattr(rm, "datetime", _FakeNow(15, 55, day=15))   # Tuesday
+        assert agent.should_flatten_eod() is True

@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService
+from src.core.mcp_client import AlpacaMCPClient
+from src.core.option_quotes import mcp_quote_provider
 from src.core.options_chain import OptionsChain
 from src.core.position_tracker import PositionTracker
 from src.strategies.csp import CashSecuredPutStrategy
@@ -46,11 +49,40 @@ class OptionsIncomeAgent:
         self._breaker = breaker
         self._allocator = allocator
 
+        self._mcp: AlpacaMCPClient | None = None
         self._csp = CashSecuredPutStrategy(
             self._alpaca, self._chain, data, tracker,
             allocator=allocator, breaker=breaker,
+            quote_provider=self._build_quote_provider(),
         )
         self._cc = CoveredCallStrategy(self._alpaca, self._chain, data, tracker)
+
+    def _build_quote_provider(self):
+        """Live option quotes through Alpaca's MCP server.
+
+        Returning None is a deliberate outcome, not a failure to handle: the
+        scanner refuses to price a contract it cannot quote, so a broken MCP
+        path costs us trades instead of producing blind ones.
+        """
+        key = os.environ.get("ALPACA_API_KEY")
+        secret = os.environ.get("ALPACA_SECRET_KEY")
+        if not key or not secret:
+            log.error("ALPACA_API_KEY/SECRET_KEY unset; CSP scanning disabled")
+            return None
+        try:
+            self._mcp = AlpacaMCPClient(key, secret, paper=True)
+            self._mcp.start()
+            log.info("MCP quote source ready (%d tools)", len(self._mcp.list_tools()))
+            return mcp_quote_provider(self._mcp)
+        except Exception:
+            log.exception("Could not start the MCP server; CSP scanning disabled")
+            self._mcp = None
+            return None
+
+    def close(self) -> None:
+        if self._mcp is not None:
+            self._mcp.stop()
+            self._mcp = None
 
     def run_cycle(self) -> dict:
         """Execute one scan-and-trade cycle. Returns summary of actions taken."""

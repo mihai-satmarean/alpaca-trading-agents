@@ -137,14 +137,32 @@ class TestUnattributedIsSurfaced:
 
 class TestConfigDrivesBehaviour:
     def test_repo_config_loads_and_is_coherent(self):
+        """Assert the invariant, not the numbers: the split is a live decision
+        and will move, but it must always be coherent."""
         cfg = load_config()
         assert cfg.validate() == []
-        assert (cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct) == (0.80, 0.15, 0.05)
+        assert cfg.options_pct + cfg.vampire_pct + cfg.reserve_pct == pytest.approx(1.0)
+        for pct in (cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct):
+            assert 0.0 <= pct <= 1.0
+
+    def test_repo_config_matches_the_agreed_split(self):
+        """Agreed 2026-08-31 pre-market: CSP $20k, vampire $20k, $60k uncommitted."""
+        cfg = load_config()
+        assert (cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct) == (0.20, 0.20, 0.60)
+
+    def test_every_csp_symbol_is_affordable_at_the_options_sleeve(self):
+        """A contract whose collateral exceeds the sleeve can never be sold.
+        The previous list was entirely unsellable at $20k: one SPY put ties up
+        about $71,500."""
+        cfg = load_config()
+        assert cfg.options_symbols
+        assert "SPY" not in cfg.options_symbols
+        assert "AAPL" not in cfg.options_symbols
 
     def test_allocation_config_reads_the_yaml(self):
-        ac = AllocationConfig.from_config()
-        assert ac.options_pct == 0.80
-        assert ac.vampire_pct == 0.15
+        cfg, ac = load_config(), AllocationConfig.from_config()
+        assert ac.options_pct == cfg.options_pct
+        assert ac.vampire_pct == cfg.vampire_pct
 
     def test_validate_catches_a_split_that_does_not_sum_to_one(self):
         bad = StrategyConfig(allocation={"options_pct": 0.9, "vampire_pct": 0.3, "reserve_pct": 0.05})

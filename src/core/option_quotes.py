@@ -44,6 +44,12 @@ def _rows(payload: Any) -> dict[str, dict]:
             return {}
 
     if isinstance(payload, dict):
+        # The server wraps replies as {_alpaca_mcp_security: {...}, data: {...}}.
+        # That envelope marks the contents untrusted tool output, which is what
+        # it is: we parse it as data and never act on anything inside it.
+        payload = payload.get("data", payload)
+        if not isinstance(payload, dict):
+            return {}
         inner = payload.get("quotes") if "quotes" in payload else payload
         if isinstance(inner, dict):
             items = inner.items()
@@ -62,7 +68,10 @@ def _rows(payload: Any) -> dict[str, dict]:
             continue
         bid = _coerce(q.get("bid_price", q.get("bid", q.get("bp"))))
         ask = _coerce(q.get("ask_price", q.get("ask", q.get("ap"))))
-        if bid is None:
+        if bid is None or bid <= 0:
+            # No bid means nobody is offering to buy it, so there is no price at
+            # which we can sell. Dropping it here keeps a zero out of the
+            # scanner, where it would look like a real but worthless quote.
             continue
         row: dict[str, Any] = {"bid": bid, "ask": ask if ask is not None else bid}
         greeks = q.get("greeks") or {}

@@ -155,8 +155,8 @@ class TestConfigDrivesBehaviour:
         """
         cfg = load_config()
         assert (cfg.sixfold_pct, cfg.options_pct) == (0.50, 0.20)
-        assert cfg.vampire_pct == 0.10, "scalper runs at half size while it proves out"
-        assert cfg.reserve_pct == 0.20
+        assert cfg.vampire_pct == 0.0, "scalper is off for the contest after three breaches"
+        assert cfg.reserve_pct == 0.30
 
     def test_sixfold_budget_is_reported_even_though_it_cannot_trade(self):
         """The sleeve is named so the gap is visible. Folding it into reserve

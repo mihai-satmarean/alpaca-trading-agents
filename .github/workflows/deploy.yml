@@ -1,0 +1,40 @@
+name: Deploy to Dell4
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-dell4
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          pip install uv
+          uv pip install --system -e ".[dev]"
+
+      - name: Run tests
+        run: pytest --tb=short -q
+
+  deploy:
+    needs: test
+    runs-on: [self-hosted, dell4]
+    if: github.ref == 'refs/heads/main'
+    timeout-minutes: 10
+    steps:
+      - name: Deploy trading agent
+        run: bash /opt/hackathon/alpaca-trading-agents/scripts/deploy.sh
+
+      - name: Show running containers
+        run: docker ps --filter "name=alpaca-"

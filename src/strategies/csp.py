@@ -22,6 +22,11 @@ log = logging.getLogger(__name__)
 # symbol list can be sized to the sleeve without a code change; a hardcoded
 # list here silently outranked the config and had the scanner spending every
 # cycle on names whose collateral exceeds the whole allocation.
+# One underlying may hold at most this share of the sleeve. Without it the
+# scanner fills the whole allocation with whichever name ranks best, and the
+# sleeve becomes a single-name bet wearing a diversified label.
+MAX_PER_UNDERLYING_PCT = 0.30
+
 MAX_REJECTIONS = 20   # a wide chain refuses hundreds; a notification carries a few
 
 CSP_SYMBOLS = ["CLF", "NIO", "F", "SOFI", "T"]
@@ -197,6 +202,29 @@ class CashSecuredPutStrategy:
         liquidity_score = min(open_interest / 500, 2.0)
         return premium_score + dte_score + liquidity_score
 
+    @staticmethod
+    def _underlying(occ_symbol: str) -> str:
+        import re as _re
+        m = _re.match(r"^([A-Z]{1,6})\d{6}[CP]\d{8}$", occ_symbol.upper())
+        return m.group(1) if m else occ_symbol.upper()
+
+    def _reject_concentration(self, under: str, need: float, cap: float,
+                              held: float) -> None:
+        """A refusal on concentration, not on merit.
+
+        Without this the scanner fills the whole sleeve with whichever name
+        ranks best, and a diversified-looking allocation becomes a single-name
+        bet.
+        """
+        log.info("Skipping %s: $%.0f + $%.0f exceeds the $%.0f per-underlying cap",
+                 under, held, need, cap)
+        if len(self.last_rejections) < MAX_REJECTIONS:
+            self.last_rejections.append({
+                "symbol": under,
+                "reason": f"would put ${held + need:,.0f} in one underlying, "
+                          f"over the ${cap:,.0f} concentration cap",
+            })
+
     def execute_best(self, max_trades: int = 3, budget: float | None = None) -> list[dict]:
         """Execute top CSP opportunities within the options sleeve budget.
 
@@ -219,12 +247,31 @@ class CashSecuredPutStrategy:
         executed: list[dict] = []
         committed = 0.0
 
+        per_name_cap = available * MAX_PER_UNDERLYING_PCT
+        by_underlying: dict[str, float] = {}
+        for sym_held, pos in snapshot.positions.items():
+            parsed = self._underlying(sym_held)
+            if parsed != sym_held.upper():          # an option we already hold
+                qty = abs(float(pos.get("qty", 0) or 0))
+                strike_digits = sym_held[-8:]
+                try:
+                    strike = int(strike_digits) / 1000.0
+                except ValueError:
+                    continue
+                by_underlying[parsed] = by_underlying.get(parsed, 0.0) + strike * 100 * qty
+
         for opp in opportunities:
             if len(executed) >= max_trades:
                 break
 
             need = opp.cash_required
             sym = opp.candidate.symbol
+            under = self._underlying(sym)
+
+            if by_underlying.get(under, 0.0) + need > per_name_cap:
+                self._reject_concentration(under, need, per_name_cap,
+                                           by_underlying.get(under, 0.0))
+                continue
 
             if committed + need > available:
                 log.info(
@@ -274,6 +321,7 @@ class CashSecuredPutStrategy:
                     strategy="csp",
                 )
                 committed += need
+                by_underlying[under] = by_underlying.get(under, 0.0) + need
                 executed.append({
                     "symbol": sym,
                     "strike": opp.candidate.strike_price,

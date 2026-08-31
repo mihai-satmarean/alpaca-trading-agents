@@ -221,3 +221,26 @@ class TestStrategyRefusesToGuess:
     def test_a_bid_below_the_floor_produces_no_opportunity(self):
         provider = lambda syms: {s: {"bid": 0.10, "ask": 0.20, "delta": -0.10} for s in syms}
         assert self._strategy(provider).scan(["SPY"]) == []
+
+
+class TestUniverseComesFromConfig:
+    """A hardcoded symbol list silently outranked config/strategies.yml, so the
+    scanner spent every cycle on names whose collateral exceeds the sleeve."""
+
+    def test_default_symbols_match_the_config(self):
+        from src.core.config import load_config
+        from src.strategies.csp import default_symbols
+
+        assert default_symbols() == load_config().options_symbols
+
+    def test_no_default_symbol_is_unaffordable_at_the_sleeve(self):
+        """One SPY put ties up ~$71,500 against a $20,000 sleeve."""
+        from src.strategies.csp import default_symbols
+
+        for oversized in ("SPY", "QQQ", "AAPL", "NVDA", "META", "AMZN", "GOOGL", "MSFT"):
+            assert oversized not in default_symbols()
+
+    def test_explicit_symbols_still_win(self):
+        from src.strategies.csp import default_symbols
+
+        assert default_symbols() != ["OVERRIDE"]

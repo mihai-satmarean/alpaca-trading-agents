@@ -7,9 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from alpaca.trading.enums import OrderSide, TimeInForce
-from alpaca.trading.requests import MarketOrderRequest
+from alpaca.trading.requests import LimitOrderRequest
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.config import get_config
 from src.core.market_data import MarketDataService
 from src.core.options_chain import OptionCandidate, OptionsChain
 from src.core.position_tracker import PositionTracker
@@ -17,11 +18,25 @@ from src.strategies.csp_scoring import QuotedPut, ScoringConfig, rank
 
 log = logging.getLogger(__name__)
 
-CSP_SYMBOLS = ["SPY", "QQQ", "AAPL", "MSFT", "AMZN", "NVDA", "META", "GOOGL"]
+# Fallback only. The live universe comes from config/strategies.yml so the
+# symbol list can be sized to the sleeve without a code change; a hardcoded
+# list here silently outranked the config and had the scanner spending every
+# cycle on names whose collateral exceeds the whole allocation.
+CSP_SYMBOLS = ["CLF", "NIO", "F", "SOFI", "T"]
+
+
+def default_symbols() -> list[str]:
+    try:
+        return get_config().options_symbols or CSP_SYMBOLS
+    except Exception:
+        log.warning("Falling back to built-in CSP symbols", exc_info=True)
+        return CSP_SYMBOLS
 
 
 @dataclass
 class CSPOpportunity:
+    """bid is attached post-construction by scan() so the order can be priced
+    at it rather than sent to market."""
     candidate: OptionCandidate
     current_price: float
     cash_required: float
@@ -82,7 +97,7 @@ class CashSecuredPutStrategy:
         only safe response to not knowing the price; the old code's answer was
         to invent one.
         """
-        symbols = symbols or CSP_SYMBOLS
+        symbols = symbols or default_symbols()
 
         if self._quote_provider is None:
             log.error("No option quote provider configured; refusing to scan CSPs")
@@ -138,14 +153,16 @@ class CashSecuredPutStrategy:
                 match = next((p for p in puts if p.symbol == ev.put.symbol), None)
                 if match is None:
                     continue
-                opportunities.append(CSPOpportunity(
+                opp = CSPOpportunity(
                     candidate=match,
                     current_price=quote.mid,
                     cash_required=ev.collateral,
                     premium_pct=ev.return_on_capital,
                     annualized_return=ev.annualized,
                     score=ev.score,
-                ))
+                )
+                opp.bid = ev.put.bid
+                opportunities.append(opp)
 
         opportunities.sort(key=lambda o: o.score, reverse=True)
         return opportunities
@@ -210,12 +227,22 @@ class CashSecuredPutStrategy:
                 continue
 
             try:
+                # Sell at the bid rather than at market. Hitting the bid is
+                # marketable so it fills like a market order, but it puts a
+                # floor under the fill: option spreads on these names run wide,
+                # and a market sell can give up much of the premium the whole
+                # strategy exists to collect.
+                limit = getattr(opp, "bid", None)
+                if not limit or limit <= 0:
+                    log.warning("Skipping %s: no bid to price the limit against", sym)
+                    continue
                 order = self._client.trading.submit_order(
-                    MarketOrderRequest(
+                    LimitOrderRequest(
                         symbol=sym,
                         qty=1,
                         side=OrderSide.SELL,
                         time_in_force=TimeInForce.DAY,
+                        limit_price=round(float(limit), 2),
                     )
                 )
                 log.info(

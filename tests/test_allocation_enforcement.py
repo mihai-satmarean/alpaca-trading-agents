@@ -201,16 +201,16 @@ class TestGatesAreActuallyCalled:
             premium_estimate=None,
             days_to_expiry=30,
         )
-        strat.scan = lambda symbols=None: [
-            CSPOpportunity(
-                candidate=candidate,
-                current_price=470.0,
-                cash_required=cash_required,
-                premium_pct=0.005,
-                annualized_return=0.06,
-                score=5.0,
-            )
-        ]
+        opp = CSPOpportunity(
+            candidate=candidate,
+            current_price=470.0,
+            cash_required=cash_required,
+            premium_pct=0.005,
+            annualized_return=0.06,
+            score=5.0,
+        )
+        opp.bid = 4.50          # orders are priced at the bid, so fixtures need one
+        strat.scan = lambda symbols=None: [opp]
         return strat, client
 
     def test_sleeve_gate_is_consulted_and_blocks_the_order(self):

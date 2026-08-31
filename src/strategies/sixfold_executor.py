@@ -17,6 +17,8 @@ from dataclasses import dataclass
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
+from src.core.finance_advisor import evaluate_equity_buy
+
 log = logging.getLogger(__name__)
 
 # Buying the same ticker the scalper trades makes the resulting position
@@ -120,6 +122,17 @@ class SixfoldExecutor:
                 self._reject(sym, "blocked by portfolio risk limits")
                 continue
 
+            score = getattr(self._analyst, "scores", {}).get(sym, {})
+            composite = score.get("composite", 0) if isinstance(score, dict) else 0
+            council = evaluate_equity_buy(sym, composite)
+            if not council.approved:
+                reasons = "; ".join(
+                    f"{o.role}: {o.reasoning[:60]}"
+                    for o in council.opinions if o.verdict == "reject"
+                )
+                self._reject(sym, f"Council rejected ({council.summary}): {reasons[:120]}")
+                continue
+
             limit = round(quote * (1 + LIMIT_SLIPPAGE), 2)
             try:
                 order = self._client.trading.submit_order(
@@ -132,10 +145,15 @@ class SixfoldExecutor:
                 continue
 
             room -= notional
+            council_detail = [
+                {"role": o.role, "verdict": o.verdict, "reasoning": o.reasoning[:120]}
+                for o in council.opinions if o.responded
+            ]
             entry = {"strategy": "sixfold", "symbol": sym, "side": "buy", "qty": qty,
                      "limit_price": limit, "notional": round(notional, 2),
                      "order_id": str(getattr(order, "id", "")),
-                     "reason": f"SIXFOLD buy candidate, {qty} sh at {limit}"}
+                     "reason": f"SIXFOLD buy, council {council.summary}",
+                     "council": council_detail}
             placed.append(entry)
             self.last_orders.append(entry)
             self._tracker.record_trade(symbol=sym, side="buy", qty=qty,

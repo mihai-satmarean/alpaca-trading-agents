@@ -1,0 +1,24 @@
+[Unit]
+# The sleeve-cap monitor. It is the only thing that notices an allocation
+# breach between scheduled reports, and on the Mac it ran as a separate
+# process alongside the agent. Without a unit of its own it simply would not
+# run on this box, and the first sign of a breach would be a report hours
+# later. It reads and alerts; it places no orders.
+Description=ProductAdvisors Alpaca sleeve watchdog
+After=alpaca-agent.service
+Wants=alpaca-agent.service
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/alpaca-agent
+EnvironmentFile=/opt/alpaca-agent/.env
+Environment=TZ=America/New_York
+ExecStart=/opt/alpaca-agent/.venv/bin/python scripts/watchdog.py --interval 20
+Restart=always
+RestartSec=15
+StandardOutput=append:/opt/alpaca-agent/logs/watchdog.log
+StandardError=append:/opt/alpaca-agent/logs/watchdog.log
+
+[Install]
+WantedBy=multi-user.target

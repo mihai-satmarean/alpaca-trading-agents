@@ -14,6 +14,10 @@ from src.risk.allocation import AllocationManager
 
 log = logging.getLogger(__name__)
 
+# A round trip pays the spread twice. Below about 2x there is no room for the
+# move to cover the cost, let alone to profit.
+SPREAD_MULTIPLE = 2.5
+
 
 class VampireAgent:
     """Manages one or more VampireEngine instances across symbols.
@@ -65,6 +69,32 @@ class VampireAgent:
                 engine.reconcile(qty, float(avg) if avg else None)
             except Exception:
                 log.warning("could not reconcile %s", sym, exc_info=True)
+
+    def _apply_spread_thresholds(self) -> None:
+        """Set each engine's trigger from its own spread, not a flat number.
+
+        A round trip crosses the spread on entry and again on exit, so a fixed
+        $0.02 trigger is below the spread on most liquid names and every trade
+        it fires is negative before it starts. Measured live on 2026-08-31, the
+        average 2.5-second move divided by the spread was 1.00 for PLTR, 0.84
+        for SPY and 0.81 for QQQ, and below 0.6 for everything else sampled.
+
+        Setting the trigger to a multiple of the spread makes the engine trade
+        rarely and only when the move on offer exceeds what it costs to take it.
+        """
+        for sym, engine in self._engines.items():
+            try:
+                quote = self._data.get_latest_quote(sym)
+                spread = float(quote.ask) - float(quote.bid) if quote else 0.0
+            except Exception:
+                log.warning("no quote for %s; keeping its configured threshold",
+                            sym, exc_info=True)
+                continue
+            if spread <= 0:
+                continue
+            engine.cfg.tick_threshold = round(spread * SPREAD_MULTIPLE, 4)
+            log.info("%s spread %.3f -> tick_threshold %.4f",
+                     sym, spread, engine.cfg.tick_threshold)
 
     def _apply_sleeve_limits(self) -> None:
         """Split the vampire sleeve across its symbols and cap each engine.
@@ -150,6 +180,7 @@ class VampireAgent:
             return
 
         self._apply_sleeve_limits()
+        self._apply_spread_thresholds()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)

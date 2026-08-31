@@ -34,10 +34,30 @@ allocation:
   reserve_pct: 0.25      # buffer
 
 vampire:
+  # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
+  # is movement LARGER than the spread it pays to capture it. Sampling 18 liquid
+  # names live gave move-per-2.5s divided by spread: PLTR 1.00, SPY 0.84,
+  # QQQ 0.81, and under 0.6 for everything else including AAPL at 0.19.
+  #
+  # Two directions were tested and both make it worse.
+  #
+  # Volatile names: spreads widen with volatility. TSLA quotes $0.49 and AMD
+  # $4.91, giving ratios of 0.09 and 0.00.
+  #
+  # Cheap names, the BlackBerry thesis: worse still, because the $0.01 minimum
+  # tick is a FIXED floor and therefore a larger fraction of a smaller price.
+  # Measured as spread in basis points of price: SNDL at $1.35 pays 74bp, PLUG
+  # at $2.15 pays 47bp, AMC at $2.62 pays 38bp, BB at $8.07 pays 12bp, against
+  # SPY at 1bp. A scalper on a $2 stock pays roughly 40 times the relative
+  # spread it pays on SPY. Over 40 seconds of live sampling, most of those names
+  # did not move their mid at all: BB scored 0.05, and eleven of them scored
+  # 0.00.
+  #
+  # These three are the least bad measured, and none of them clears 1.5.
   symbols:
     - SPY
     - QQQ
-    - AAPL
+    - PLTR
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

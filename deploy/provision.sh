@@ -25,6 +25,18 @@ else
     sudo apt-get install -y -qq python3.12 python3.12-venv python3.12-dev
 fi
 
+# The CSP strategy gets its option quotes from the Alpaca MCP server, which is
+# launched as `uvx alpaca-mcp-server`. Without uv on PATH the server never
+# starts and CSP silently stops scanning. systemd units get a minimal PATH, so
+# it has to land somewhere that PATH already looks.
+if ! command -v uvx >/dev/null 2>&1; then
+    curl -LsSf https://astral.sh/uv/install.sh | sh
+    UVDIR=$(dirname "$(find "$HOME" /root -name uv -type f -perm -u+x 2>/dev/null | head -1)")
+    sudo install -m 0755 "$UVDIR/uv"  /usr/local/bin/uv
+    sudo install -m 0755 "$UVDIR/uvx" /usr/local/bin/uvx
+fi
+uvx --version
+
 sudo mkdir -p "$DIR" && sudo chown "$USER:$USER" "$DIR"
 [ -d "$DIR/.git" ] || git clone -q "$REPO" "$DIR"
 cd "$DIR"

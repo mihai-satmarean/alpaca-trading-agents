@@ -40,6 +40,24 @@ class AlpacaMCPClient:
         self._lines: Queue[str | None] = Queue()
         self._reader: Optional[threading.Thread] = None
 
+    def _stderr_tail(self, limit: int = 400) -> str:
+        """The server's own last words, which decide what the fix is.
+
+        stderr was routed to DEVNULL, so a server that died during startup
+        reported only its exit code. The cause on 2026-08-31 was a dependency
+        that had moved a module, stated plainly on the stream being discarded,
+        and it cost a session of CSP scanning to find by hand.
+        """
+        proc = self._process
+        if proc is None or proc.stderr is None:
+            return "(no stderr captured)"
+        try:
+            text = proc.stderr.read() or ""
+        except Exception:
+            return "(stderr unreadable)"
+        lines = [ln for ln in text.strip().splitlines() if ln.strip()]
+        return lines[-1][:limit] if lines else "(stderr empty)"
+
     def start(self) -> None:
         """Spawn the MCP server process and perform the handshake."""
         if self._process is not None:
@@ -52,11 +70,20 @@ class AlpacaMCPClient:
             "ALPACA_PAPER_TRADE": "true" if self.paper else "false",
         })
 
+        # fastmcp 4.0 moved fastmcp.tools.tool, which alpaca-mcp-server 2.3.0
+        # imports at module scope. uvx resolves the newest fastmcp on every cold
+        # run, so the day 4.0.0 was published the server began exiting with
+        # ModuleNotFoundError before it could answer initialize. Nothing in this
+        # repo changed. CSP scanning was disabled from 14:47 on 2026-08-31 and
+        # the only trace was one ERROR line per restart.
+        #
+        # Pin below 4 until alpaca-mcp-server supports the new layout.
         self._process = subprocess.Popen(
-            ["uvx", "alpaca-mcp-server", "--transport", "stdio"],
+            ["uvx", "--with", "fastmcp<4",
+             "alpaca-mcp-server", "--transport", "stdio"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
             text=True,
             bufsize=1,
             env=env,
@@ -149,7 +176,10 @@ class AlpacaMCPClient:
                 raise TimeoutError(f"timed out after {self.timeout}s waiting for {what}") from None
             if line is None:
                 code = self._process.poll() if self._process else None
-                raise RuntimeError(f"MCP server exited (code {code}) while awaiting {what}")
+                raise RuntimeError(
+                f"MCP server exited (code {code}) while awaiting {what}: "
+                f"{self._stderr_tail()}"
+            )
             line = line.strip()
             if not line.startswith("{"):
                 continue

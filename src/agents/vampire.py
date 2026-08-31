@@ -48,12 +48,35 @@ class VampireAgent:
             cfg = VampireConfig(symbol=sym, **overrides)
             self._engines[sym] = VampireEngine(client, data, tracker, cfg)
 
+    def _reconcile_engines(self) -> None:
+        """Point each engine at the position the broker reports for its symbol."""
+        try:
+            positions = self._tracker.get_snapshot().positions or {}
+        except Exception:
+            log.warning("could not read the book; engines stay at their own count",
+                        exc_info=True)
+            return
+
+        for sym, engine in self._engines.items():
+            row = positions.get(sym) or positions.get(sym.upper()) or {}
+            try:
+                qty = int(float(row.get("qty", 0) or 0))
+                avg = row.get("avg_entry_price")
+                engine.reconcile(qty, float(avg) if avg else None)
+            except Exception:
+                log.warning("could not reconcile %s", sym, exc_info=True)
+
     def _apply_sleeve_limits(self) -> None:
         """Split the vampire sleeve across its symbols and cap each engine.
 
         Without this the sleeve is advisory: the budget is read once at startup
         and the engines then accumulate independently to max_position.
         """
+        # Adopt the real book before sizing anything. A fresh process believes
+        # it is flat, and sizing against that belief is what let the sleeve be
+        # breached almost sevenfold across restarts.
+        self._reconcile_engines()
+
         budget = self._allocator.get_budget().vampire_budget
         if not budget or not self._engines:
             return

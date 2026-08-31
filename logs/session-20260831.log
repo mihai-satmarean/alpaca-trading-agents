@@ -11315,3 +11315,356 @@ Traceback (most recent call last):
   File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/.venv/lib/python3.12/site-packages/requests/adapters.py", line 711, in send
     raise ConnectionError(err, request=request)
 requests.exceptions.ConnectionError: ('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))
+12:30:11 INFO src.agents.options_income: MCP quote source ready (72 tools)
+12:30:11 INFO run_live: next report PRE-CLOSE at 15:30 ET (in 180 min)
+12:30:11 INFO run_live: market open — starting agents
+12:30:12 WARNING src.agents.narrator: narration unavailable
+Traceback (most recent call last):
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/narrator.py", line 141, in _run
+    text = _chat(system, user)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/Users/frankvillavicencio/Documents/Development/alpaca-trading-agents/src/agents/narrator.py", line 133, in _chat
+    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 404: Not Found
+12:30:12 INFO run_live: narration unavailable; reporting numbers only
+12:30:12 INFO run_live: reported: equity 100211.44 daily 0.00
+12:30:12 INFO src.agents.coordinator: === ProductAdvisors Trading System Starting ===
+12:30:12 INFO src.agents.coordinator: Account equity: $100211.69 | Cash: $67342.98
+12:30:12 INFO src.agents.sixfold_analyst: SIXFOLD Analyst agent starting
+12:30:12 INFO src.agents.sixfold_analyst: SIXFOLD scan starting for 18 symbols
+12:30:12 INFO src.agents.risk_manager: Risk Manager Agent started
+12:30:12 INFO src.core.financial_data: Fetching fundamentals for SPY
+12:30:12 INFO src.agents.options_income: Options Income Agent started
+12:30:12 INFO src.agents.coordinator: All agents started (including SIXFOLD analyst). Entering coordination loop.
+12:30:12 WARNING src.agents.vampire: Vampire allocation is zero; agent will not start
+12:30:13 INFO src.agents.coordinator: Rebalancing allocations
+12:30:13 INFO src.agents.coordinator: Options: $14800/$20042 | Vampire: $0/$0
+12:30:13 INFO src.agents.coordinator: Status: equity=$100208 pnl=$-4 trades=0 positions=10
+12:30:13 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1573 per-underlying cap
+12:30:13 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1573 per-underlying cap
+12:30:13 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1573 per-underlying cap
+12:30:13 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: SPY"}}}
+12:30:14 INFO src.core.financial_data: Fetching fundamentals for QQQ
+12:30:14 INFO src.strategies.csp: CSP order placed: NIO260911P00004000 strike $4.00, collateral $400
+12:30:14 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: CSP order placed: CLF260918P00011500 strike $11.50, collateral $1150
+12:30:14 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1573 per-underlying cap
+12:30:14 INFO src.strategies.csp: CSP order placed: NIO260925P00004000 strike $4.00, collateral $400
+12:30:15 INFO src.strategies.csp: CSP order placed: NIO260918P00004000 strike $4.00, collateral $400
+12:30:15 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $1573 per-underlying cap
+12:30:15 ERROR yfinance: HTTP Error 404: {"quoteSummary":{"result":null,"error":{"code":"Not Found","description":"No fundamentals data found for symbol: QQQ"}}}
+12:30:15 INFO src.strategies.csp: CSP order placed: F260911P00013500 strike $13.50, collateral $1350
+12:30:15 INFO src.strategies.csp: Skipping F: $1350 + $1350 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping F: $1350 + $1350 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping F: $1350 + $1300 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $1573 per-underlying cap
+12:30:15 INFO src.agents.options_income: Options cycle complete: 5 CSP, 0 CC trades
+12:30:15 INFO src.core.financial_data: Fetching fundamentals for AAPL
+12:30:16 INFO src.core.financial_data: Fetching fundamentals for MSFT
+12:30:18 INFO src.core.financial_data: Fetching fundamentals for GOOGL
+12:30:19 INFO src.core.financial_data: Fetching fundamentals for AMZN
+12:30:20 INFO src.core.financial_data: Fetching fundamentals for NVDA
+12:30:21 INFO src.core.financial_data: Fetching fundamentals for META
+12:30:22 INFO src.core.financial_data: Fetching fundamentals for JPM
+12:30:23 INFO src.core.financial_data: Fetching fundamentals for V
+12:30:24 INFO src.core.financial_data: Fetching fundamentals for JNJ
+12:30:25 INFO src.core.financial_data: Fetching fundamentals for UNH
+12:30:26 INFO src.core.financial_data: Fetching fundamentals for PG
+12:30:27 INFO src.core.financial_data: Fetching fundamentals for HD
+12:30:28 INFO src.core.financial_data: Fetching fundamentals for COST
+12:30:29 INFO src.core.financial_data: Fetching fundamentals for ABBV
+12:30:31 INFO src.core.financial_data: Fetching fundamentals for LLY
+12:30:32 INFO src.core.financial_data: Fetching fundamentals for MRK
+12:30:33 INFO src.agents.sixfold_analyst: SIXFOLD scan complete: 18 scored, 8 buy candidates
+12:30:33 INFO src.agents.sixfold_analyst:   NVDA: 78.5 (screening)
+12:30:33 INFO src.agents.sixfold_analyst:   MSFT: 77.6 (screening)
+12:30:33 INFO src.agents.sixfold_analyst:   GOOGL: 77.4 (screening)
+12:30:33 INFO src.agents.sixfold_analyst:   PG: 72.3 (screening)
+12:30:33 INFO src.agents.sixfold_analyst:   META: 70.7 (screening)
+12:35:16 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: CSP order placed: CLF260918P00011500 strike $11.50, collateral $1150
+12:35:16 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1454 per-underlying cap
+12:35:16 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: CSP order placed: NIO260911P00004000 strike $4.00, collateral $400
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: CSP order placed: NIO260918P00004000 strike $4.00, collateral $400
+12:35:17 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: CSP order placed: F260911P00013500 strike $13.50, collateral $1350
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping F: $1350 + $1350 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping F: $1350 + $1350 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.strategies.csp: Skipping F: $1350 + $1300 exceeds the $1454 per-underlying cap
+12:35:17 INFO src.agents.options_income: Options cycle complete: 4 CSP, 0 CC trades
+12:40:14 INFO src.agents.coordinator: Status: equity=$100211 pnl=$-1 trades=9 positions=12
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1213 per-underlying cap
+12:40:18 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: CSP order placed: CLF260918P00011500 strike $11.50, collateral $1150
+12:40:19 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $1213 per-underlying cap
+12:40:19 INFO src.agents.options_income: Options cycle complete: 1 CSP, 0 CC trades
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $869 per-underlying cap
+12:45:20 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $869 per-underlying cap
+12:45:20 INFO src.agents.options_income: Options cycle complete: 0 CSP, 0 CC trades
+12:50:15 INFO src.agents.coordinator: Status: equity=$100274 pnl=$63 trades=10 positions=13
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $872 per-underlying cap
+12:50:21 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $872 per-underlying cap
+12:50:21 INFO src.agents.options_income: Options cycle complete: 0 CSP, 0 CC trades
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $872 per-underlying cap
+12:55:23 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $872 per-underlying cap
+12:55:23 INFO src.agents.options_income: Options cycle complete: 0 CSP, 0 CC trades
+13:00:16 INFO src.agents.coordinator: Status: equity=$100281 pnl=$70 trades=10 positions=13
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1050 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping MARA: $10000 + $1000 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1600 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping CLF: $1150 + $1150 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1550 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1750 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping CLF: $1150 + $1100 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1700 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping NIO: $1200 + $400 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping T: $0 + $2600 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping RIVN: $4800 + $1500 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping T: $0 + $2550 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping SOFI: $0 + $1650 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping F: $0 + $1350 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping T: $0 + $2500 exceeds the $872 per-underlying cap
+13:00:24 INFO src.strategies.csp: Skipping F: $0 + $1300 exceeds the $872 per-underlying cap
+13:00:24 INFO src.agents.options_income: Options cycle complete: 0 CSP, 0 CC trades

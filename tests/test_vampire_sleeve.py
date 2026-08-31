@@ -30,6 +30,9 @@ def _filling_client(fill=None):
 
     def _order(symbol, qty, side, tif=None):
         o = _MM()
+        # A terminal status matters: without it _submit polls to timeout, which
+        # is correct behaviour and makes the suite wall-clock bound.
+        o.status = "filled"
         o.filled_qty = str(qty if fill is None else fill)
         o.id = "test-order"
         return o
@@ -152,8 +155,9 @@ class TestZeroAllocationStopsIt:
         asyncio.run(a.run())
         data.subscribe_quotes.assert_not_called()
 
-    def test_repo_config_has_it_off(self):
-        """Off after three breaches in one session, the third with fill
-        confirmation in place. Two correct diagnoses, neither sufficient."""
+    def test_repo_config_runs_it_at_quarter_size(self):
+        """Re-enabled at 5% after the audit found the real cause. A quarter of
+        the original allocation, because it has three breaches behind it and one
+        session of correct behaviour ahead of it."""
         from src.core.config import load_config
-        assert load_config().vampire_pct == 0.0
+        assert load_config().vampire_pct == 0.05

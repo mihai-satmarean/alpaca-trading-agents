@@ -24,6 +24,9 @@ def _filling_client(fill=None):
 
     def _order(symbol, qty, side, tif=None):
         o = _MM()
+        # A terminal status matters: without it _submit polls to timeout, which
+        # is correct behaviour and makes the suite wall-clock bound.
+        o.status = "filled"
         o.filled_qty = str(qty if fill is None else fill)
         o.id = "test-order"
         return o

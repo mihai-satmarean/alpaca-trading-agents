@@ -31,6 +31,10 @@ class StrategyConfig:
     risk: dict[str, Any] = field(default_factory=dict)
 
     @property
+    def sixfold_pct(self) -> float:
+        return float(self.allocation.get("sixfold_pct", 0.0))
+
+    @property
     def options_pct(self) -> float:
         return float(self.allocation.get("options_pct", 0.80))
 
@@ -62,15 +66,16 @@ class StrategyConfig:
         """Return a list of problems. Empty list means the config is coherent."""
         problems: list[str] = []
 
-        total = self.options_pct + self.vampire_pct + self.reserve_pct
+        total = self.sixfold_pct + self.options_pct + self.vampire_pct + self.reserve_pct
         if abs(total - 1.0) > 1e-6:
             problems.append(
                 f"allocation percentages sum to {total:.4f}, expected 1.0 "
-                f"(options={self.options_pct}, vampire={self.vampire_pct}, "
-                f"reserve={self.reserve_pct})"
+                f"(sixfold={self.sixfold_pct}, options={self.options_pct}, "
+                f"vampire={self.vampire_pct}, reserve={self.reserve_pct})"
             )
 
         for name, pct in (
+            ("sixfold_pct", self.sixfold_pct),
             ("options_pct", self.options_pct),
             ("vampire_pct", self.vampire_pct),
             ("reserve_pct", self.reserve_pct),

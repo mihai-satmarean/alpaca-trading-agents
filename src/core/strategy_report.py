@@ -40,6 +40,7 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
     sleeves = {
         "CSP (options)": SleeveReport("CSP (options)", equity * cfg.options_pct),
         "Vampire (scalper)": SleeveReport("Vampire (scalper)", equity * cfg.vampire_pct),
+        "SixFold (Tashi)": SleeveReport("SixFold (Tashi)", equity * cfg.sixfold_pct),
         "Unattributed": SleeveReport("Unattributed", 0.0),
     }
 
@@ -94,6 +95,13 @@ def render(snapshot, sleeves: dict[str, SleeveReport], orders=None) -> str:
     ]
     for s in sleeves.values():
         if s.name == "Unattributed" and not s.positions:
+            continue
+        if s.name == "SixFold (Tashi)" and not s.positions:
+            # Named rather than hidden: the analyst produces recommendations and
+            # places no orders, so this sleeve stays at zero until something acts
+            # on them. Showing it is how that gap stays visible.
+            lines.append(f"**{s.name}** $0 / ${s.budget:,.0f} (0%)")
+            lines.append("  analyst only, no order path yet")
             continue
         used = f"${s.committed:,.0f}"
         cap = f" / ${s.budget:,.0f} ({s.utilisation:.0%})" if s.budget else ""

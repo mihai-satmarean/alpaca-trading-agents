@@ -77,6 +77,7 @@ class AllocationConfig:
     options_pct: float = 0.80
     vampire_pct: float = 0.15
     reserve_pct: float = 0.05
+    sixfold_pct: float = 0.0
 
     @classmethod
     def from_config(cls) -> AllocationConfig:
@@ -85,6 +86,7 @@ class AllocationConfig:
             options_pct=cfg.options_pct,
             vampire_pct=cfg.vampire_pct,
             reserve_pct=cfg.reserve_pct,
+            sixfold_pct=cfg.sixfold_pct,
         )
 
 
@@ -99,6 +101,7 @@ class AllocationBudget:
     options_available: float
     vampire_available: float
     unattributed_used: float = 0.0
+    sixfold_budget: float = 0.0
 
 
 class AllocationManager:
@@ -156,6 +159,7 @@ class AllocationManager:
             options_available=max(0.0, options_budget - used["options"]),
             vampire_available=max(0.0, vampire_budget - used["vampire"]),
             unattributed_used=used["unattributed"],
+            sixfold_budget=equity * self.config.sixfold_pct,
         )
 
     def can_allocate_options(self, amount: float) -> bool:

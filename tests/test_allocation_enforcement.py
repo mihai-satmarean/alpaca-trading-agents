@@ -141,14 +141,24 @@ class TestConfigDrivesBehaviour:
         and will move, but it must always be coherent."""
         cfg = load_config()
         assert cfg.validate() == []
-        assert cfg.options_pct + cfg.vampire_pct + cfg.reserve_pct == pytest.approx(1.0)
-        for pct in (cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct):
+        assert (cfg.sixfold_pct + cfg.options_pct + cfg.vampire_pct
+                + cfg.reserve_pct) == pytest.approx(1.0)
+        for pct in (cfg.sixfold_pct, cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct):
             assert 0.0 <= pct <= 1.0
 
     def test_repo_config_matches_the_agreed_split(self):
-        """Agreed 2026-08-31 pre-market: CSP $20k, vampire $20k, $60k uncommitted."""
+        """Agreed 2026-08-31: sixfold 50, CSP 20, vampire 20, buffer 10."""
         cfg = load_config()
-        assert (cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct) == (0.20, 0.20, 0.60)
+        assert (cfg.sixfold_pct, cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct) \
+            == (0.50, 0.20, 0.20, 0.10)
+
+    def test_sixfold_budget_is_reported_even_though_it_cannot_trade(self):
+        """The sleeve is named so the gap is visible. Folding it into reserve
+        hid a team decision behind a bigger uncommitted number."""
+        tracker = MagicMock()
+        tracker.get_snapshot.return_value = _snapshot(equity=100_000)
+        budget = AllocationManager(tracker, AllocationConfig.from_config()).get_budget()
+        assert budget.sixfold_budget == pytest.approx(50_000.0)
 
     def test_every_csp_symbol_is_affordable_at_the_options_sleeve(self):
         """A contract whose collateral exceeds the sleeve can never be sold.

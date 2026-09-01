@@ -30,6 +30,7 @@ class StrategyConfig:
     options: dict[str, Any] = field(default_factory=dict)
     risk: dict[str, Any] = field(default_factory=dict)
     sixfold: dict[str, Any] = field(default_factory=dict)
+    pendulum: dict[str, Any] = field(default_factory=dict)
 
     @property
     def sixfold_pct(self) -> float:
@@ -42,6 +43,14 @@ class StrategyConfig:
     @property
     def vampire_pct(self) -> float:
         return float(self.allocation.get("vampire_pct", 0.15))
+
+    @property
+    def pendulum_pct(self) -> float:
+        return float(self.allocation.get("pendulum_pct", 0.0))
+
+    @property
+    def pendulum_symbol(self) -> str:
+        return str(self.pendulum.get("symbol", "TLT")).upper()
 
     @property
     def reserve_pct(self) -> float:
@@ -77,18 +86,21 @@ class StrategyConfig:
         """Return a list of problems. Empty list means the config is coherent."""
         problems: list[str] = []
 
-        total = self.sixfold_pct + self.options_pct + self.vampire_pct + self.reserve_pct
+        total = (self.sixfold_pct + self.options_pct + self.vampire_pct
+                 + self.pendulum_pct + self.reserve_pct)
         if abs(total - 1.0) > 1e-6:
             problems.append(
                 f"allocation percentages sum to {total:.4f}, expected 1.0 "
                 f"(sixfold={self.sixfold_pct}, options={self.options_pct}, "
-                f"vampire={self.vampire_pct}, reserve={self.reserve_pct})"
+                f"vampire={self.vampire_pct}, pendulum={self.pendulum_pct}, "
+                f"reserve={self.reserve_pct})"
             )
 
         for name, pct in (
             ("sixfold_pct", self.sixfold_pct),
             ("options_pct", self.options_pct),
             ("vampire_pct", self.vampire_pct),
+            ("pendulum_pct", self.pendulum_pct),
             ("reserve_pct", self.reserve_pct),
         ):
             if not 0.0 <= pct <= 1.0:
@@ -136,6 +148,7 @@ def load_config(path: Path | None = None) -> StrategyConfig:
         options=raw.get("options", {}) or {},
         risk=raw.get("risk", {}) or {},
         sixfold=raw.get("sixfold", {}) or {},
+        pendulum=raw.get("pendulum", {}) or {},
     )
 
     for problem in cfg.validate():

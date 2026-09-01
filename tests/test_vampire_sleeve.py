@@ -163,7 +163,7 @@ class TestZeroAllocationStopsIt:
         """
         from src.core.config import load_config
         cfg = load_config()
-        assert cfg.vampire_pct == 0.20
+        assert cfg.vampire_pct == 0.15
         per_symbol = 100_000 * cfg.vampire_pct / max(len(cfg.vampire_symbols), 1)
         assert per_symbol >= 2_000, (
             f"${per_symbol:,.0f} per symbol is too thin to trade the priciest name"

@@ -1,4 +1,8 @@
-"""Vampire Agent: wraps the vampire engine for the coordinator."""
+"""Vampire Agent: wraps the vampire engine for the coordinator.
+
+Integrates the VampireSymbolPicker for data-driven symbol selection and
+mid-session rotation via bleed budgets.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +10,8 @@ import asyncio
 import logging
 import statistics
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.market_data import MarketDataService, Quote
@@ -13,27 +19,22 @@ from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationManager
 from src.risk.circuit_breakers import CircuitBreaker
 from src.strategies.vampire_engine import VampireConfig, VampireEngine, VampireState
+from src.strategies.vampire_symbol_picker import (
+    PickerConfig,
+    VampireSymbolPicker,
+)
 
 log = logging.getLogger(__name__)
 
-# A round trip pays the spread twice. Below about 2x there is no room for the
-# move to cover the cost, let alone to profit.
-SPREAD_MULTIPLE = 2.5
+ET = ZoneInfo("America/New_York")
 
-# Never let a threshold be set below this, whatever the sampled spread says. A
-# single tight quote on an unstable book (PLTR read 0.04 at startup and traded
-# 0.915 wide twenty minutes later) would otherwise arm the engine to fire on
-# quote flicker all session.
+SPREAD_MULTIPLE = 2.5
 MIN_TICK_THRESHOLD = 0.02
 SPREAD_SAMPLES = 5
 
-# A quote wider than this fraction of the price is not the book this
-# strategy trades against. HOOD read a median spread of $3.87 on a $104
-# stock at 15:25 on 2026-08-31, 3.7% wide against its usual 4 cents, and
-# the derived trigger came out at $9.67: a 9.3% move required before the
-# symbol would ever act. There was a floor on the threshold and no
-# ceiling, so a bad book silently retires a symbol instead of failing.
 MAX_SPREAD_FRACTION = 0.005
+
+HEALTH_CHECK_INTERVAL = 300
 
 
 class VampireAgent:
@@ -52,6 +53,8 @@ class VampireAgent:
         allocator: AllocationManager,
         symbols: list[str] | None = None,
         config_overrides: dict | None = None,
+        enable_picker: bool = True,
+        picker_config: PickerConfig | None = None,
     ):
         self._client = client
         self._data = data
@@ -59,13 +62,26 @@ class VampireAgent:
         self._breaker = breaker
         self._allocator = allocator
 
-        symbols = symbols or ["SPY"]
         overrides = config_overrides or {}
-
-        self._symbols = list(symbols)
         self._overrides = overrides
         self._engines: dict[str, VampireEngine] = {}
-        for sym in symbols:
+        self._picker: VampireSymbolPicker | None = None
+        self._last_health_check: float = 0.0
+
+        if enable_picker:
+            budget = allocator.get_budget().vampire_budget
+            self._picker = VampireSymbolPicker(
+                client=client, data=data,
+                sleeve_budget=budget,
+                config=picker_config or PickerConfig(),
+            )
+
+        if symbols:
+            self._symbols = list(symbols)
+        else:
+            self._symbols = ["SPY"]
+
+        for sym in self._symbols:
             cfg = VampireConfig(symbol=sym, **overrides)
             self._engines[sym] = VampireEngine(client, data, tracker, cfg)
 
@@ -219,6 +235,128 @@ class VampireAgent:
                 sym, per_symbol, engine.cfg.max_position, engine.cfg.position_size,
             )
 
+    def run_pre_market_scan(self) -> list[str]:
+        """Use the VampireSymbolPicker to select symbols before the open.
+
+        Replaces the static list with data-driven selection.  If the picker
+        is disabled or fails, falls back to the existing symbols.
+        """
+        if self._picker is None:
+            log.info("Picker disabled, keeping static symbols: %s", list(self._engines.keys()))
+            return list(self._engines.keys())
+
+        try:
+            result = self._picker.pick()
+        except Exception:
+            log.exception("Pre-market scan failed; keeping current symbols")
+            return list(self._engines.keys())
+
+        if not result.symbols:
+            log.warning("Picker returned no symbols; keeping current list")
+            return list(self._engines.keys())
+
+        old = set(self._engines.keys())
+        new = set(result.symbols)
+
+        for sym in old - new:
+            engine = self._engines.pop(sym, None)
+            if engine:
+                try:
+                    engine._flatten_all("picker_rotation")
+                except Exception:
+                    log.exception("Failed to flatten %s during rotation", sym)
+
+        for sym in new - old:
+            cfg = VampireConfig(symbol=sym, **self._overrides)
+            self._engines[sym] = VampireEngine(
+                self._client, self._data, self._tracker, cfg,
+            )
+            log.info("Added victim %s from pre-market scan", sym)
+
+        self._symbols = list(self._engines.keys())
+        log.info("Post-scan lineup: %s", self._symbols)
+        return self._symbols
+
+    def check_and_rotate(self) -> list[dict]:
+        """Mid-session health check: retire exhausted symbols, add replacements.
+
+        Called periodically during the session (every HEALTH_CHECK_INTERVAL seconds).
+        Returns a list of rotation events for logging/notification.
+        """
+        if self._picker is None:
+            return []
+
+        now = time.time()
+        if now - self._last_health_check < HEALTH_CHECK_INTERVAL:
+            return []
+        self._last_health_check = now
+
+        events: list[dict] = []
+
+        retirements = self._picker.check_health(self._engines)
+
+        for sym, reason in retirements:
+            log.info("Retiring %s: %s", sym, reason)
+            engine = self._engines.get(sym)
+            if engine:
+                try:
+                    engine._flatten_all("rotation_" + reason.split(":")[0])
+                    engine._state = VampireState.STOPPED
+                except Exception:
+                    log.exception("Failed to flatten %s during rotation", sym)
+
+            self._picker.retire_symbol(sym, reason)
+            events.append({"action": "retire", "symbol": sym, "reason": reason})
+
+        if retirements:
+            current = [s for s in self._engines if self._engines[s].state != VampireState.STOPPED]
+            replacements = self._picker.find_replacements(current, count=len(retirements))
+
+            for sym in replacements:
+                cfg = VampireConfig(symbol=sym, **self._overrides)
+                engine = VampireEngine(self._client, self._data, self._tracker, cfg)
+                self._engines[sym] = engine
+
+                self._calibrate_single(sym, engine)
+                events.append({"action": "add", "symbol": sym, "reason": "replacement"})
+                log.info("Fresh victim: %s replaces retired symbol", sym)
+
+            for retired_sym, _ in retirements:
+                if retired_sym in self._engines and self._engines[retired_sym].state == VampireState.STOPPED:
+                    self._engines.pop(retired_sym, None)
+
+            self._apply_sleeve_limits()
+            self._symbols = list(self._engines.keys())
+
+        return events
+
+    def _calibrate_single(self, sym: str, engine: VampireEngine) -> None:
+        """Apply spread threshold to a single engine (used for mid-session replacements)."""
+        spreads: list[float] = []
+        mids: list[float] = []
+        for _ in range(SPREAD_SAMPLES):
+            try:
+                quote = self._data.get_latest_quote(sym)
+                if quote:
+                    bid, ask = float(quote.bid), float(quote.ask)
+                    sp = ask - bid
+                    if sp > 0:
+                        spreads.append(sp)
+                        mids.append((bid + ask) / 2)
+            except Exception:
+                pass
+            time.sleep(0.2)
+
+        price = statistics.median(mids) if mids else 0.0
+        if not spreads:
+            return
+        usable = [sp for sp in spreads if sp <= price * MAX_SPREAD_FRACTION] if price > 0 else spreads
+        if not usable:
+            return
+        spread = statistics.median(usable)
+        engine.cfg.tick_threshold = round(max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4)
+        log.info("%s calibrated: spread %.3f -> threshold %.4f", sym, spread, engine.cfg.tick_threshold)
+
     def activity_summary(self) -> list[dict]:
         """Per-symbol view of what the scalper actually did.
 
@@ -268,6 +406,7 @@ class VampireAgent:
             log.warning("Insufficient vampire budget ($%.0f), not starting", budget.vampire_available)
             return
 
+        self.run_pre_market_scan()
         self._apply_sleeve_limits()
         self._drop_unshortable()
         self._apply_spread_thresholds()
@@ -280,6 +419,8 @@ class VampireAgent:
             if engine:
                 vwap = self._data.get_vwap(quote.symbol, engine.cfg.bleed_window_seconds)
                 engine.tick(quote.mid, vwap)
+
+            self.check_and_rotate()
 
         await self._data.subscribe_quotes(all_symbols, on_quote)
         await self._data.subscribe_trades(all_symbols, lambda _: asyncio.sleep(0))

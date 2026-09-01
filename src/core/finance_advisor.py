@@ -1,7 +1,7 @@
-"""Advisory Council: 3-model consensus for trade decisions.
+"""Advisory Council: 4-model consensus for trade decisions.
 
-Three LLMs with different training biases evaluate every trade candidate
-in parallel. A trade proceeds only when at least 2 of 3 advisors agree.
+Four LLMs with different training biases evaluate every trade candidate
+in parallel. A trade proceeds only when at least 2 of 4 advisors agree.
 Each advisor's reasoning is logged for full transparency.
 
 The council is best-effort: if a model is unreachable it counts as an
@@ -9,9 +9,10 @@ abstention, not a veto. If fewer than 2 advisors respond, the trade
 proceeds on the deterministic signal alone (no AI gate).
 
 Models:
-  - dell4-finance  (Fin-R1 7B)     -- financial domain specialist
-  - dell4-chat     (Qwen3.6-35B)   -- general reasoning, broad context
-  - dell4-qwen38   (Qwen3.8-27B)   -- strong general, multimodal capable
+  - dell4-finance   (Fin-R1 7B)     -- financial domain specialist
+  - dell4-fino1-14b (Fino1 14B)     -- financial reasoning, FinQA SOTA
+  - dell4-chat      (Qwen3.6-35B)   -- general reasoning, broad context
+  - dell4-qwen38    (Qwen3.8-27B)   -- strong general, multimodal capable
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ except Exception:
 
 COUNCIL_MODELS = [
     ("dell4-finance", "Finance Specialist"),
+    ("dell4-fino1-14b", "Financial Reasoner"),
     ("dell4-chat", "General Strategist"),
     ("dell4-qwen38", "Risk Analyst"),
 ]
@@ -157,7 +159,7 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
 
     wall_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "25")) + 10
 
-    with ThreadPoolExecutor(max_workers=3) as pool:
+    with ThreadPoolExecutor(max_workers=len(COUNCIL_MODELS)) as pool:
         futures = {}
         for model, role in COUNCIL_MODELS:
             system = system_prompts.get(role, system_prompts.get("default", ""))
@@ -220,6 +222,13 @@ _EQUITY_BUY_PROMPTS = {
         "Start your answer with APPROVE or REJECT, then give 2-3 sentences of reasoning. "
         "Focus on: valuation, earnings quality, and balance sheet strength."
     ),
+    "Financial Reasoner": (
+        "You are a financial reasoning expert trained on financial QA datasets. "
+        "Evaluate this equity buy signal using quantitative reasoning. "
+        "Start your answer with APPROVE or REJECT, then give 2-3 sentences of reasoning. "
+        "Focus on: numerical consistency of the score, P/E and growth rate alignment, "
+        "and whether the valuation metrics support the buy thesis."
+    ),
     "General Strategist": (
         "You are a portfolio strategist reviewing an equity buy signal. "
         "Start your answer with APPROVE or REJECT, then give 2-3 sentences of reasoning. "
@@ -251,6 +260,13 @@ _CSP_PROMPTS = {
         "Start with APPROVE or REJECT, then 2-3 sentences. "
         "Focus on: premium adequacy, whether you'd want to own the stock at "
         "the effective cost basis, and earnings/event risk during the contract."
+    ),
+    "Financial Reasoner": (
+        "You are a financial reasoning expert. Evaluate this cash-secured put "
+        "using quantitative analysis. "
+        "Start with APPROVE or REJECT, then 2-3 sentences. "
+        "Focus on: annualized return vs risk-free rate, implied volatility "
+        "rank, and whether the premium compensates for assignment risk."
     ),
     "General Strategist": (
         "You are a portfolio strategist evaluating an options income trade. "
@@ -335,3 +351,117 @@ def market_briefing(equity: float, daily_pnl: float,
         f"Strategies active: SIXFOLD equity selection, CSP income, micro-scalping\n"
     )
     return _safe_call("dell4-finance", _MARKET_SYSTEM, prompt, "briefing")
+
+
+# ---------------------------------------------------------------------------
+# Council Metrics Tracker
+# ---------------------------------------------------------------------------
+
+class CouncilMetrics:
+    """Tracks approval rates, model agreement, and outcome correlation."""
+
+    def __init__(self):
+        self._decisions: list[dict] = []
+
+    def record(self, decision: CouncilDecision, outcome_pnl: float | None = None) -> None:
+        """Record a council decision and optionally its trading outcome."""
+        per_model: dict[str, str] = {}
+        for op in decision.opinions:
+            per_model[op.model] = op.verdict
+
+        self._decisions.append({
+            "symbol": decision.symbol,
+            "action": decision.action,
+            "approved": decision.approved,
+            "votes_for": decision.votes_for,
+            "votes_against": decision.votes_against,
+            "abstentions": decision.abstentions,
+            "per_model": per_model,
+            "outcome_pnl": outcome_pnl,
+        })
+
+    def update_outcome(self, symbol: str, pnl: float) -> None:
+        """Backfill outcome P&L for the most recent decision on a symbol."""
+        for d in reversed(self._decisions):
+            if d["symbol"] == symbol and d["outcome_pnl"] is None:
+                d["outcome_pnl"] = pnl
+                break
+
+    @property
+    def total_decisions(self) -> int:
+        return len(self._decisions)
+
+    @property
+    def approval_rate(self) -> float:
+        if not self._decisions:
+            return 0.0
+        return sum(1 for d in self._decisions if d["approved"]) / len(self._decisions)
+
+    def model_agreement_rate(self) -> dict[str, float]:
+        """For each model, how often it voted with the majority."""
+        if not self._decisions:
+            return {}
+
+        model_agree: dict[str, int] = {}
+        model_total: dict[str, int] = {}
+
+        for d in self._decisions:
+            majority = "approve" if d["approved"] else "reject"
+            for model, verdict in d["per_model"].items():
+                model_total[model] = model_total.get(model, 0) + 1
+                if verdict == majority:
+                    model_agree[model] = model_agree.get(model, 0) + 1
+
+        return {
+            m: model_agree.get(m, 0) / model_total[m]
+            for m in model_total
+        }
+
+    def outcome_correlation(self) -> dict[str, dict]:
+        """Correlate council decisions with trading outcomes.
+
+        Returns stats for approved-and-profitable, approved-and-lost, etc.
+        """
+        stats = {
+            "approved_profit": 0,
+            "approved_loss": 0,
+            "rejected_would_profit": 0,
+            "rejected_would_loss": 0,
+            "no_outcome": 0,
+        }
+        for d in self._decisions:
+            if d["outcome_pnl"] is None:
+                stats["no_outcome"] += 1
+            elif d["approved"] and d["outcome_pnl"] > 0:
+                stats["approved_profit"] += 1
+            elif d["approved"] and d["outcome_pnl"] <= 0:
+                stats["approved_loss"] += 1
+            elif not d["approved"] and d["outcome_pnl"] is not None and d["outcome_pnl"] > 0:
+                stats["rejected_would_profit"] += 1
+            elif not d["approved"] and d["outcome_pnl"] is not None:
+                stats["rejected_would_loss"] += 1
+        return stats
+
+    def summary(self) -> str:
+        """Human-readable metrics summary."""
+        lines = [
+            f"Council Metrics ({self.total_decisions} decisions):",
+            f"  Approval rate: {self.approval_rate:.1%}",
+        ]
+        agreement = self.model_agreement_rate()
+        if agreement:
+            lines.append("  Model agreement with majority:")
+            for model, rate in sorted(agreement.items()):
+                lines.append(f"    {model}: {rate:.1%}")
+        corr = self.outcome_correlation()
+        if corr["no_outcome"] < self.total_decisions:
+            lines.append("  Outcome correlation:")
+            lines.append(f"    Approved & profitable: {corr['approved_profit']}")
+            lines.append(f"    Approved & lost: {corr['approved_loss']}")
+            lines.append(f"    Rejected (would profit): {corr['rejected_would_profit']}")
+            lines.append(f"    Rejected (would lose): {corr['rejected_would_loss']}")
+        return "\n".join(lines)
+
+
+# Global metrics instance
+council_metrics = CouncilMetrics()

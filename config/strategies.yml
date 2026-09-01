@@ -45,6 +45,25 @@ allocation:
   reserve_pct: 0.10      # buffer
 
 vampire:
+  # HALTED for the rest of 2026-09-01; resumes automatically at tomorrow's open.
+  #
+  # Measured at 15:30 ET on the two symbols that were left after HOOD and SPY
+  # were cut, using average-cost expectancy over closed round trips:
+  #
+  #   TQQQ  142 closes   0% win rate   -$1.03 per trade
+  #   QQQ                               -$0.13 per trade
+  #
+  # A 0% win rate over 142 closes is not variance. TQQQ went 69.32 to 68.41 in
+  # a near-straight line and the scalper, which is built to fade oscillation,
+  # bought every step down and averaged in. Doubling its sleeve at the 13:43
+  # restart made expectancy three times worse (-$0.32 to -$1.03), which is the
+  # signature of a strategy with negative edge being given more size.
+  #
+  # The date is the mechanism, not a note: the engine compares today against
+  # it and lifts the halt on its own. Nothing has to be remembered, and no
+  # machine outside EC2 has to be awake for the scalper to trade the open.
+  paused_until: "2026-09-02"
+
   # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
   # is movement LARGER than the spread it pays to capture it. Sampling 18 liquid
   # names live gave move-per-2.5s divided by spread: PLTR 1.00, SPY 0.84,

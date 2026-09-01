@@ -65,6 +65,8 @@ class Coordinator:
             self._breaker,
             self._allocator,
             symbols=cfg.vampire_symbols or ["SPY", "QQQ"],
+            config_overrides=({"paused_until": cfg.vampire_paused_until}
+                              if cfg.vampire_paused_until else None),
         )
         self._risk_agent = RiskManagerAgent(
             self._client, self._tracker, self._breaker, self._allocator

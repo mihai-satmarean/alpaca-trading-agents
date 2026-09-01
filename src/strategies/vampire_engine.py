@@ -12,7 +12,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from datetime import time as dt_time
 from enum import Enum
 from zoneinfo import ZoneInfo
@@ -65,6 +65,12 @@ class VampireConfig:
     max_daily_loss: float = 50.0
     max_trades_per_min: int = 20
     max_notional: float | None = None   # hard cap on |position| x price
+    # ISO date (ET). While today is before it, the engine flattens and idles.
+    # A pause that needs a human to lift it is a pause that gets left on, so
+    # this one carries its own expiry: set the date the strategy should trade
+    # again and nothing further is required. Fail-safe by construction - a bug
+    # here can only stop trading, never start it.
+    paused_until: str | None = None
 
 
 class VampireEngine:
@@ -108,6 +114,30 @@ class VampireEngine:
     @property
     def bleeds(self) -> list[BleedRecord]:
         return list(self._bleeds)
+
+    def _is_paused(self) -> bool:
+        """True while today (ET) is before the configured resume date.
+
+        Halted on 2026-09-01 after the scalper posted a negative expectancy on
+        both remaining symbols: TQQQ -$1.03/trade over 142 closed round trips
+        with a 0% win rate, QQQ -$0.13/trade. The pause carries its own expiry
+        so the strategy resumes on its own rather than depending on someone
+        remembering to switch it back on.
+
+        An unparseable date does NOT pause. A typo that silently halted the
+        strategy indefinitely would be the same "left off by accident" failure
+        this is built to avoid, and it would be invisible - the engine would
+        just quietly never trade.
+        """
+        if not self.cfg.paused_until:
+            return False
+        try:
+            resume = date.fromisoformat(str(self.cfg.paused_until))
+        except ValueError:
+            log.warning("%s: paused_until %r is not an ISO date; not pausing",
+                        self.cfg.symbol, self.cfg.paused_until)
+            return False
+        return datetime.now(ZoneInfo("America/New_York")).date() < resume
 
     def _is_market_hours(self) -> bool:
         now = datetime.now(ZoneInfo("America/New_York")).time()
@@ -281,6 +311,12 @@ class VampireEngine:
             return
 
         if time.time() < self._reject_cooldown_until:
+            return
+
+        if self._is_paused():
+            if self._net_position != 0:
+                self._flatten_all("paused")
+            self._state = VampireState.IDLE
             return
 
         if not self._is_market_hours():

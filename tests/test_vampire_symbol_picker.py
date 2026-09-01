@@ -240,3 +240,131 @@ class TestReplacement:
     def test_no_metrics_returns_empty(self):
         picker = _mock_picker()
         assert picker.find_replacements(["SPY"]) == []
+
+    def test_fasting_mode_blocks_replacements(self):
+        picker = _mock_picker()
+        picker._all_metrics = {
+            "AMD": SymbolMetrics(symbol="AMD", score=0.5, shortable=True),
+        }
+        picker._is_fasting = True
+        replacements = picker.find_replacements(["SPY"], count=1)
+        assert replacements == []
+
+
+# ---------------------------------------------------------------------------
+# Patience / time limits
+# ---------------------------------------------------------------------------
+
+class TestPatience:
+
+    def test_patience_not_expired_within_window(self):
+        b = BleedBudget(
+            symbol="SPY", profit_target=50, loss_limit=25,
+            patience_minutes=60.0,
+            started_at=datetime.now(ET) - timedelta(minutes=30),
+            realized_pnl=-2.0,
+        )
+        assert not b.patience_expired
+        assert not b.should_retire
+
+    def test_patience_expired_after_window_with_no_profit(self):
+        b = BleedBudget(
+            symbol="SPY", profit_target=50, loss_limit=25,
+            patience_minutes=60.0,
+            started_at=datetime.now(ET) - timedelta(minutes=90),
+            realized_pnl=-2.0,
+        )
+        assert b.patience_expired
+        assert b.should_retire
+
+    def test_patience_not_expired_if_profitable(self):
+        """A symbol making money keeps going even past the patience window."""
+        b = BleedBudget(
+            symbol="SPY", profit_target=50, loss_limit=25,
+            patience_minutes=60.0,
+            started_at=datetime.now(ET) - timedelta(minutes=90),
+            realized_pnl=10.0,
+        )
+        assert not b.patience_expired
+
+    def test_patience_not_expired_if_not_started(self):
+        b = BleedBudget(symbol="SPY", profit_target=50, loss_limit=25,
+                        patience_minutes=60.0, started_at=None)
+        assert not b.patience_expired
+
+    def test_check_health_detects_patience_expiry(self):
+        picker = _mock_picker()
+        engine = MagicMock()
+        engine.daily_pnl = -1.0
+        engine.bleeds = list(range(5))
+
+        picker._bleed_budgets["SPY"] = BleedBudget(
+            symbol="SPY", profit_target=50, loss_limit=25,
+            patience_minutes=60.0,
+            started_at=datetime.now(ET) - timedelta(minutes=90),
+        )
+        retirements = picker.check_health({"SPY": engine})
+        assert len(retirements) == 1
+        assert "patience expired" in retirements[0][1]
+
+
+# ---------------------------------------------------------------------------
+# Starvation floor / fasting mode
+# ---------------------------------------------------------------------------
+
+class TestStarvationFloor:
+
+    def test_fasting_triggers_when_session_losses_exceed_floor(self):
+        cfg = PickerConfig(target_count=3, starvation_floor_pct=0.30)
+        picker = _mock_picker(sleeve=10_000.0, cfg=cfg)
+
+        engine_a = MagicMock()
+        engine_a.daily_pnl = -2000.0
+        engine_a.bleeds = []
+        engine_b = MagicMock()
+        engine_b.daily_pnl = -1500.0
+        engine_b.bleeds = []
+
+        picker._bleed_budgets["A"] = BleedBudget(
+            symbol="A", profit_target=50, loss_limit=25,
+            started_at=datetime.now(ET),
+        )
+        picker._bleed_budgets["B"] = BleedBudget(
+            symbol="B", profit_target=50, loss_limit=25,
+            started_at=datetime.now(ET),
+        )
+
+        retirements = picker.check_health({"A": engine_a, "B": engine_b})
+
+        assert picker.is_fasting
+        assert len(retirements) == 2
+        assert all("starvation floor" in r[1] for r in retirements)
+
+    def test_fasting_mode_returns_no_retirements_on_subsequent_check(self):
+        picker = _mock_picker()
+        picker._is_fasting = True
+        engine = MagicMock()
+        engine.daily_pnl = -100.0
+        engine.bleeds = []
+        retirements = picker.check_health({"SPY": engine})
+        assert retirements == []
+
+    def test_starvation_floor_calculation(self):
+        cfg = PickerConfig(target_count=3, starvation_floor_pct=0.30)
+        picker = _mock_picker(sleeve=10_000.0, cfg=cfg)
+        assert picker.starvation_floor == 3_000.0
+
+    def test_normal_loss_does_not_trigger_fasting(self):
+        cfg = PickerConfig(target_count=3, starvation_floor_pct=0.30)
+        picker = _mock_picker(sleeve=10_000.0, cfg=cfg)
+
+        engine = MagicMock()
+        engine.daily_pnl = -500.0
+        engine.bleeds = list(range(3))
+
+        picker._bleed_budgets["SPY"] = BleedBudget(
+            symbol="SPY", profit_target=50, loss_limit=25,
+            started_at=datetime.now(ET),
+        )
+        retirements = picker.check_health({"SPY": engine})
+        assert not picker.is_fasting

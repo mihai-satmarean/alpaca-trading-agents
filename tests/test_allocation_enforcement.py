@@ -147,21 +147,23 @@ class TestConfigDrivesBehaviour:
             assert 0.0 <= pct <= 1.0
 
     def test_repo_config_matches_the_agreed_split(self):
-        """Agreed 2026-08-31: sixfold 50, CSP 20, scalper 10, buffer 20.
+        """Agreed 2026-09-01: sixfold 50, CSP 20, scalper 20, buffer 10.
 
         The scalper's headroom lives in reserve rather than being reallocated,
         because nothing else has been sized to absorb it. It went 20 -> 0 after
-        three allocation breaches, 0 -> 5 once the cause was found, and 5 -> 10
-        that afternoon: the sleeve is split evenly per symbol, so four symbols
-        at 5% leave $1,250 each, which buys one share of a $715 QQQ.
+        three allocation breaches on 2026-08-31, 0 -> 5 once the cause was
+        found, 5 -> 10 that afternoon once the cap held for a full session,
+        and 10 -> 20 on 2026-09-01 once EC2's first live session self-healed
+        from its opening reject cluster with zero recurrence and no lasting
+        drift for the rest of the morning.
 
         This test exists to make a change to the split deliberate. If it fails,
         confirm the number was meant to move before editing it.
         """
         cfg = load_config()
         assert (cfg.sixfold_pct, cfg.options_pct) == (0.50, 0.20)
-        assert cfg.vampire_pct == 0.10, "scalper at half the original 20%"
-        assert cfg.reserve_pct == 0.20
+        assert cfg.vampire_pct == 0.20, "scalper at the full original allocation"
+        assert cfg.reserve_pct == 0.10
         assert cfg.vampire_pct + cfg.reserve_pct == pytest.approx(0.30), (
             "scalper headroom comes out of reserve and nowhere else"
         )

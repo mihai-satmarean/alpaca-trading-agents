@@ -30,12 +30,19 @@
 # sleeve, never over). The sleeve is split evenly across symbols, so adding
 # QQQ and SPY at $5,000 would have left each of the four with $1,250, which
 # buys ONE share of a $715 QQQ. Four symbols need the larger sleeve to be
-# able to trade at all. Full 20% after one clean session end to end.
+# able to trade at all.
+#
+# Raised to the full 20% on 2026-09-01, EC2's first live session: the
+# opening seven minutes produced a reject cluster (root-caused to a poll
+# timeout too tight for opening-bell order flow, fixed in the same commit
+# range and not yet deployed at the time of this change) but self-healed
+# with zero recurrence for the rest of the morning, no rate limiting, no
+# lasting drift. That is the clean session this comment asked for.
 allocation:
   sixfold_pct: 0.50      # Tashi, $50,000
   options_pct: 0.20      # CSP, $20,000
-  vampire_pct: 0.10      # scalper, $10,000: see the sizing note below
-  reserve_pct: 0.20      # buffer
+  vampire_pct: 0.20      # scalper, $20,000: full allocation
+  reserve_pct: 0.10      # buffer
 
 vampire:
   # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs

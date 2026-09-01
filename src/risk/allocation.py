@@ -197,3 +197,136 @@ class AllocationManager:
         vampire_drift = abs(budget.vampire_used / budget.total_equity - self.config.vampire_pct)
 
         return options_drift > tolerance_pct or vampire_drift > tolerance_pct
+
+
+# ---------------------------------------------------------------------------
+# 4-Tier Profit Cascade
+# ---------------------------------------------------------------------------
+
+@dataclass
+class CascadeTier:
+    """One tier in the profit cascade."""
+    name: str
+    risk_level: int            # 1 (highest risk) to 4 (lowest risk)
+    promotion_threshold: float # profit above which surplus cascades down
+    allocation_pct: float      # current sleeve percentage of total equity
+
+
+@dataclass
+class CascadeConfig:
+    """Thresholds for the 4-tier profit waterfall.
+
+    Tier 1 (Vampire Scalper): highest risk, generates initial profits.
+    Tier 2 (Bull Call Spreads): moderate risk, defined-risk options plays.
+    Tier 3 (SIXFOLD + CSP): lower risk, equity positions and premium selling.
+    Tier 4 (Cash Reserve): zero risk, safety buffer.
+
+    When a tier's realized P&L exceeds its promotion_threshold, the surplus
+    moves to the next tier's budget. This creates a natural flow from high-risk
+    to low-risk as the account grows.
+    """
+    tier1_promotion: float = 100.0   # vampire profits above $100 cascade
+    tier2_promotion: float = 200.0   # bull spread profits above $200 cascade
+    tier3_promotion: float = 500.0   # SIXFOLD+CSP profits above $500 cascade
+    cascade_pct: float = 0.50        # fraction of surplus that cascades (keep some for growth)
+
+
+class ProfitCascade:
+    """Manages the 4-tier profit waterfall from high-risk to low-risk."""
+
+    def __init__(
+        self,
+        allocator: AllocationManager,
+        config: CascadeConfig | None = None,
+    ):
+        self._allocator = allocator
+        self.cfg = config or CascadeConfig()
+        self._tier_pnl: dict[str, float] = {
+            "vampire": 0.0,
+            "bull_spread": 0.0,
+            "sixfold_csp": 0.0,
+            "reserve": 0.0,
+        }
+        self._cascade_log: list[dict] = []
+
+    @property
+    def tier_pnl(self) -> dict[str, float]:
+        return dict(self._tier_pnl)
+
+    @property
+    def cascade_history(self) -> list[dict]:
+        return list(self._cascade_log)
+
+    def record_pnl(self, tier: str, amount: float) -> None:
+        """Record realized P&L for a tier."""
+        if tier not in self._tier_pnl:
+            log.warning("Unknown cascade tier: %s", tier)
+            return
+        self._tier_pnl[tier] += amount
+
+    def cascade_profits(self) -> list[dict]:
+        """Run the cascade: move surplus profits from higher-risk to lower-risk tiers.
+
+        Returns a list of cascade actions taken.
+        """
+        actions: list[dict] = []
+
+        thresholds = [
+            ("vampire", "bull_spread", self.cfg.tier1_promotion),
+            ("bull_spread", "sixfold_csp", self.cfg.tier2_promotion),
+            ("sixfold_csp", "reserve", self.cfg.tier3_promotion),
+        ]
+
+        for source, target, threshold in thresholds:
+            pnl = self._tier_pnl[source]
+            if pnl <= threshold:
+                continue
+
+            surplus = pnl - threshold
+            cascade_amount = surplus * self.cfg.cascade_pct
+
+            self._tier_pnl[source] -= cascade_amount
+            self._tier_pnl[target] += cascade_amount
+
+            action = {
+                "from": source,
+                "to": target,
+                "amount": round(cascade_amount, 2),
+                "source_remaining": round(self._tier_pnl[source], 2),
+                "target_new_total": round(self._tier_pnl[target], 2),
+            }
+            actions.append(action)
+            self._cascade_log.append(action)
+
+            log.info(
+                "Cascade: $%.2f from %s -> %s (surplus $%.2f above $%.0f threshold)",
+                cascade_amount, source, target, surplus, threshold,
+            )
+
+        return actions
+
+    def get_adjusted_budgets(self) -> dict[str, float]:
+        """Return budget adjustments from cascaded profits.
+
+        These are additive amounts on top of the base allocation percentages.
+        """
+        return {
+            "vampire_extra": self._tier_pnl["vampire"],
+            "bull_spread_extra": self._tier_pnl["bull_spread"],
+            "sixfold_csp_extra": self._tier_pnl["sixfold_csp"],
+            "reserve_extra": self._tier_pnl["reserve"],
+        }
+
+    def summary(self) -> str:
+        """Human-readable cascade status."""
+        lines = ["Profit Cascade Status:"]
+        tier_names = {
+            "vampire": "Tier 1 (Vampire Scalper)",
+            "bull_spread": "Tier 2 (Bull Call Spreads)",
+            "sixfold_csp": "Tier 3 (SIXFOLD + CSP)",
+            "reserve": "Tier 4 (Cash Reserve)",
+        }
+        for key, name in tier_names.items():
+            lines.append(f"  {name}: ${self._tier_pnl[key]:+.2f}")
+        lines.append(f"  Total cascaded: {len(self._cascade_log)} transfers")
+        return "\n".join(lines)

@@ -118,11 +118,24 @@ def _chat(system: str, user: str) -> str:
     key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LITELLM_KEY") or ""
     timeout = float(os.environ.get("NARRATOR_TIMEOUT", "45"))
 
+    # dell4-chat is a reasoning model: it spends tokens on a hidden
+    # reasoning_content field before answering, and 700 was consistently
+    # exhausted by that alone, returning content: null with finish_reason
+    # "length" - not an error, so nothing here ever raised. Confirmed live
+    # against the real endpoint with the production prompt: at 700 tokens
+    # every reasoning-capable model tested returned null; at 4000 all of
+    # them (dell4-chat 12.5s, dell4-finance 2.0s, dell4-qwen38 34.5s)
+    # returned real content with finish_reason "stop". This cluster is
+    # self-hosted with no per-token cost, so the budget was the wrong
+    # thing to economize - NARRATOR_MAX_TOKENS is generous by default and
+    # left tunable rather than hardcoded again.
+    max_tokens = int(os.environ.get("NARRATOR_MAX_TOKENS", "4000"))
+
     body = json.dumps({
         "model": os.environ.get("NARRATOR_MODEL", "dell4-chat"),
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": user}],
-        "max_tokens": 700,
+        "max_tokens": max_tokens,
         "temperature": 0.3,
     }).encode()
 

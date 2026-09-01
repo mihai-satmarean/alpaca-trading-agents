@@ -10,9 +10,7 @@ rather than a promise in a docstring.
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import patch
 
 from src.agents.narrator import (
     NarrationRequest,
@@ -117,3 +115,53 @@ class TestSessionSummary:
     def test_summary_degrades_to_none_without_a_model(self):
         with patch("src.agents.narrator._chat", side_effect=ConnectionError):
             assert summarise_session(_req()) is None
+
+
+class TestTokenBudget:
+    """A reasoning model spends tokens on hidden reasoning_content before it
+    answers. At 700 max_tokens every reasoning-capable model tested against
+    the real cluster returned content: null with finish_reason "length" -
+    not an error, so nothing upstream ever caught it. This cluster is
+    self-hosted with no per-token cost, so a small hardcoded budget was the
+    wrong economy. Confirmed live: 4000 tokens is enough for real content.
+    """
+
+    def _sent_body(self, monkeypatch, env=None):
+        import urllib.request
+
+        import src.agents.narrator as n
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": "ok"}}]}
+                ).encode()
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data)
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        for k, v in (env or {}).items():
+            monkeypatch.setenv(k, v)
+        n._chat("system", "user")
+        return captured["body"]
+
+    def test_default_budget_is_generous_not_700(self, monkeypatch):
+        body = self._sent_body(monkeypatch)
+        assert body["max_tokens"] >= 2000, (
+            "700 was consistently exhausted by hidden reasoning tokens alone; "
+            "this must not regress back to a budget that size"
+        )
+
+    def test_the_budget_is_tunable_without_a_code_change(self, monkeypatch):
+        body = self._sent_body(monkeypatch, env={"NARRATOR_MAX_TOKENS": "9000"})
+        assert body["max_tokens"] == 9000

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from src.core.finance_advisor import CouncilDecision, AdvisorOpinion
+from src.core.finance_advisor import AdvisorOpinion, CouncilDecision
 from src.strategies.sixfold_executor import SixfoldExecutor
 
 COUNCIL_PATCH = "src.strategies.sixfold_executor.evaluate_equity_buy"
@@ -172,3 +172,39 @@ class TestCouncilVeto:
         ex.run_cycle()
         rejection = ex.last_rejections[0]
         assert "Council rejected" in rejection["reason"]
+
+
+@patch(COUNCIL_PATCH, side_effect=_council_approve)
+class TestTheConcurrencyLimitCountsOnlyThisSleeve:
+    """_held() returns every equity position in the account, so counting it
+    raw let another sleeve's open names consume SIXFOLD's position budget.
+
+    Live on 2026-09-01: SIXFOLD held 8 names and the scalper held 2-4, so the
+    count was 10-12 against a limit of 10 and every new candidate was rejected
+    as "at the limit". The sleeve sat at $38K of its $50K while KO (66.0) and
+    HD (65.0) both scored above the buy threshold. committed() already drew
+    the sleeve boundary for dollars; the count did not draw it for slots.
+    """
+
+    def test_another_sleeves_positions_do_not_consume_the_limit(self, _m):
+        """8 owned + 4 excluded is 12 raw, but only 8 belong to this sleeve,
+        so a 9th name must still be buyable."""
+        held = {f"OWN{i}": {"market_value": 4_800.0} for i in range(8)}
+        held.update({s: {"market_value": 3_000.0}
+                     for s in ("SPY", "QQQ", "HOOD", "TQQQ")})
+        ex, client = _exec(["KO"], price=100.0, positions=held,
+                           excluded=("SPY", "QQQ", "HOOD", "TQQQ"))
+        result = ex.run_cycle()
+        assert len(result["orders"]) == 1, (
+            f"expected KO to be bought; rejections were {ex.last_rejections}"
+        )
+        client.trading.submit_order.assert_called_once()
+
+    def test_the_limit_still_binds_on_this_sleeves_own_positions(self, _m):
+        """The guard must still work: 10 owned means no room for an 11th."""
+        held = {f"OWN{i}": {"market_value": 4_800.0} for i in range(10)}
+        ex, client = _exec(["KO"], price=100.0, positions=held,
+                           excluded=("SPY", "QQQ"), sleeve=200_000.0)
+        ex.run_cycle()
+        client.trading.submit_order.assert_not_called()
+        assert any("position limit" in r["reason"] for r in ex.last_rejections)

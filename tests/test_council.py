@@ -229,3 +229,71 @@ class TestExecutorPassesTheRealScore:
         council.assert_called_once()
         assert council.call_args[0] == ("JPM", 78.5), \
             "the dict-style read passed 0.0 for every real SixfoldScore"
+
+
+class TestTheTokenBudgetDoesNotSilenceAdvisors:
+    """A silenced advisor is not a neutral one.
+
+    Several council models are reasoning models: they spend tokens on a hidden
+    reasoning_content field before answering. At the old 350-token default that
+    budget was consumed by reasoning alone, the response came back with
+    content=None, and _llm_call's .strip() raised AttributeError - which
+    _query_advisor records as "model unavailable", an abstention.
+
+    Live consequence on 2026-09-01 13:53 ET: the council rejected a real HD buy
+    1 for / 1 against / 1 abstain, the abstainer being dell4-chat. With one of
+    three voters structurally silent, a gate designed as "2 of 3" was running
+    as 2 of 2 - effective unanimity - against the largest sleeve.
+    """
+
+    def _sent(self, monkeypatch, env=None):
+        import json as _json
+        import urllib.request
+        import src.core.finance_advisor as fa
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self):
+                return _json.dumps(
+                    {"choices": [{"message": {"content": "APPROVE ok"}}]}
+                ).encode()
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = _json.loads(req.data)
+            captured["timeout"] = timeout
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        for k, v in (env or {}).items():
+            monkeypatch.setenv(k, v)
+        fa._llm_call("dell4-chat", "sys", "user")
+        return captured
+
+    def test_the_default_budget_is_no_longer_350(self, monkeypatch):
+        body = self._sent(monkeypatch)["body"]
+        assert body["max_tokens"] >= 2000, (
+            "350 was consumed entirely by hidden reasoning, producing "
+            "content=None and a silent abstention"
+        )
+
+    def test_the_budget_is_tunable_without_a_code_change(self, monkeypatch):
+        body = self._sent(monkeypatch, env={"COUNCIL_MAX_TOKENS": "8000"})["body"]
+        assert body["max_tokens"] == 8000
+
+    def test_the_request_timeout_clears_the_slowest_measured_advisor(self, monkeypatch):
+        """dell4-qwen38 measured 34.5s at a real token budget."""
+        assert self._sent(monkeypatch)["timeout"] >= 40
+
+    def test_the_wall_is_not_shorter_than_the_request_timeout(self, monkeypatch):
+        """A wall below the per-request timeout cancels advisors mid-answer and
+        books them as abstentions - the same silent-vote failure, relocated."""
+        import os
+        import src.core.finance_advisor as fa
+        req_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
+        wall = float(os.environ.get("COUNCIL_TIMEOUT", "60")) + 10
+        assert wall > req_timeout
+        with open(fa.__file__) as fh:
+            assert "COUNCIL_TIMEOUT" in fh.read()

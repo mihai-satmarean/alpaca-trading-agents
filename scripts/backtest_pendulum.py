@@ -69,18 +69,24 @@ def run(bars, p: PendulumParams, capital: float = 100_000.0,
     dates = [b.timestamp.date() for b in bars]
 
     cash, pos, trades = capital, None, []
-    pending: tuple[Signal, str] | None = None
+    # (signal, why, below_regime_at_signal). The regime flag rides along
+    # because aggressive mode halves size below the 200-day, and a backtest
+    # that sizes differently from the live agent is measuring a different
+    # strategy -- the exact drift this file exists to prevent.
+    pending: tuple[Signal, str, bool] | None = None
     equity_curve, signal_log = [], []
     entry_date = None
 
     for i in range(len(bars)):
         # ---- fill yesterday's decision at today's open, before deciding again
         if pending is not None:
-            sig, why = pending
+            sig, why, below = pending
             px_raw = opens[i]
             if sig in (Signal.BUY, Signal.ADD):
                 px = px_raw * (1 + slip_bps / 10_000)
                 budget = (capital * first_tranche) if sig is Signal.BUY else (capital * (1 - first_tranche))
+                if below:
+                    budget *= p.below_regime_size_mult
                 budget = min(budget, cash)
                 qty = int(budget // px)
                 if qty > 0:
@@ -109,7 +115,8 @@ def run(bars, p: PendulumParams, capital: float = 100_000.0,
         if pos is not None:
             pos.bars_held += 1
         if sig in (Signal.BUY, Signal.ADD, Signal.EXIT):
-            pending = (sig, why)
+            below_now = bool(ind.sma_regime is not None and ind.close < ind.sma_regime)
+            pending = (sig, why, below_now)
             signal_log.append((dates[i], sig.value, why))
 
     if pos is not None:   # mark the open position out at the last close

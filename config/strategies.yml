@@ -80,11 +80,30 @@ allocation:
 # +5.14% to +16.51%, so these sit on a plateau rather than a peak. Costs were
 # swept to 10bp per side and it still returns +7.21%.
 #
-# allow_below_regime is FALSE. The spec permits it "only after backtesting"
-# and the backtest is now done: it is what loses money in a 2022, and TLT has
-# closed below its 200-day SMA for 45 straight sessions, which is that regime.
-# Turning it on would be switching on the mode whose one bad year is the year
-# we are currently in.
+# allow_below_regime is TRUE, Frank's call on 2026-09-01 after seeing the
+# conservative numbers.
+#
+# The first measurement of aggressive mode was wrong and argued against it.
+# It modelled the flag alone, at full size with the normal stop, because
+# below_regime_size_mult was a declared field that nothing read. The spec's
+# aggressive mode is three changes: allow the entry, cut size in half, AND
+# tighten the stop. Implemented properly it is a materially different and
+# better-behaved strategy:
+#
+#                        trades   return   maxDD   win%   2022    PF
+#   flag only (wrong)        56  +12.09%  -5.07%  64.3%  -3033  1.66
+#   spec aggressive          58   +8.69%  -2.56%  60.3%  -1513  1.90
+#   conservative             11   +5.83%  -1.99%  90.9%      0     -
+#
+# Half the drawdown, half the 2022 loss, better profit factor, and average win
+# ($525) now exceeds average loss ($421). It gives up return against the
+# full-size version and buys back most of the risk that made me argue against
+# it. Against conservative it is 5x the trade frequency and ~50% more return
+# for 0.6pp more drawdown.
+#
+# below_regime_atr_mult is 1.0, not the 1.25 that backtested best (+9.76%,
+# -2.34%). Picking the peak of a sweep at n=56 is the curve-fit the spec warns
+# about; 1.0 is the round number inside the spec's own stated 1.0-2.0 range.
 pendulum:
   symbol: TLT
   entry_z: -2.0
@@ -95,7 +114,9 @@ pendulum:
   atr_mult: 1.5
   hard_stop_pct: 0.05
   regime_lookback: 200
-  allow_below_regime: false
+  allow_below_regime: true
+  below_regime_size_mult: 0.5    # spec: "cut position size in half"
+  below_regime_atr_mult: 1.0     # spec: "tighten the stop" (vs 1.5 normally)
   risk_per_trade: 0.01
   first_tranche: 0.6
   run_after: "09:35"

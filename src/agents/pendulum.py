@@ -119,14 +119,21 @@ class PendulumAgent:
         sleeve = float(getattr(self._allocator.get_budget(), "pendulum_budget", 0.0))
         if sleeve <= 0 or price <= 0:
             return 0
-        stop = stop_price(price, ind.atr, self.p)
+        below = bool(ind.sma_regime is not None and ind.close < ind.sma_regime)
+        stop = stop_price(price, ind.atr, self.p, below_regime=below)
         distance = max(price - stop, price * 0.005)     # never divide by ~0
         by_risk = (equity * self._risk_per_trade) / distance
         share_of_sleeve = sleeve * ((1 - self._first_tranche) if is_add else self._first_tranche)
         by_sleeve = share_of_sleeve / price
         used = float(getattr(self._allocator.get_budget(), "pendulum_used", 0.0))
         headroom = max(0.0, sleeve - used) / price
-        return int(min(by_risk, by_sleeve, headroom))
+        qty = min(by_risk, by_sleeve, headroom)
+        if below:
+            # "cut position size in half" -- the other half of aggressive mode.
+            # Applied after the caps, so it halves whatever would have been
+            # traded rather than halving a number the caps then raise back.
+            qty *= self.p.below_regime_size_mult
+        return int(qty)
 
     # ---------------------------------------------------------------- cycle
     def should_run(self, now: dt.datetime | None = None) -> bool:

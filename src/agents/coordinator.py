@@ -84,6 +84,8 @@ class Coordinator:
                 hard_stop_pct=float(pend.get("hard_stop_pct", 0.05)),
                 regime_lookback=int(pend.get("regime_lookback", 200)),
                 allow_below_regime=bool(pend.get("allow_below_regime", False)),
+                below_regime_size_mult=float(pend.get("below_regime_size_mult", 0.5)),
+                below_regime_atr_mult=float(pend.get("below_regime_atr_mult", 1.0)),
             ),
             risk_per_trade=float(pend.get("risk_per_trade", 0.01)),
             first_tranche=float(pend.get("first_tranche", 0.6)),

@@ -168,6 +168,15 @@ class SixfoldExecutor:
             return {"status": "analyst_error", "orders": [], "disposals": disposed}
 
         held = self._held()
+        # Count only this sleeve's own positions against its concurrency
+        # limit. _held() returns every equity position in the account, so
+        # counting it raw let the scalper's 2-4 open names consume SIXFOLD's
+        # 10-position budget: 8 held here plus 4 there is 12, so every new
+        # candidate was rejected as "at the limit" and the sleeve sat at $38K
+        # of its $50K with KO and HD both scoring above the buy threshold.
+        # committed() already draws this boundary for dollars; the count has
+        # to draw the same one.
+        own_held = {k for k in held if k not in self._excluded}
         budget_each = self.position_budget()
         room = sleeve - self.committed()
         placed: list[dict] = []
@@ -180,7 +189,7 @@ class SixfoldExecutor:
             if sym in held:
                 self._reject(sym, "already held")
                 continue
-            if len(placed) + len(held) >= self._max_concurrent:
+            if len(placed) + len(own_held) >= self._max_concurrent:
                 self._reject(sym, f"at the {self._max_concurrent}-position limit")
                 continue
 

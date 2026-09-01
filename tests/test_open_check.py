@@ -93,3 +93,74 @@ class TestThresholds:
 
     def test_caps_match_the_configured_split_on_100k(self):
         assert oc.CAPS == {"Scalper": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
+
+
+class TestClosedMarketIsNotAnAlarm:
+    """systemd OnCalendar knows weekdays; it does not know Thanksgiving.
+
+    Zero fills is the loudest signal this check has on a trading day and
+    meaningless on a holiday. A monitor that alarms every Christmas is one
+    nobody reads by New Year.
+    """
+
+    def _run(self, monkeypatch, *, is_open, fills, units=None):
+        calls = {}
+
+        def fake_api(path):
+            if path == "/v2/clock":
+                return {"is_open": is_open}
+            if path == "/v2/account":
+                return {"equity": "100000", "last_equity": "100000"}
+            if path.startswith("/v2/positions"):
+                return []
+            raise AssertionError(path)
+
+        monkeypatch.setattr(oc, "_api", fake_api)
+        monkeypatch.setattr(oc, "log_signatures", lambda since: {})
+        monkeypatch.setattr(oc, "units_status",
+                            lambda: units or (["alpaca-agent active restarts=0"], True))
+        monkeypatch.setattr(oc, "fills_today", lambda day: fills)
+        calls["out"] = oc.build_report("09:30:00")
+        return calls["out"]
+
+    def test_zero_fills_on_a_holiday_is_not_a_problem(self, monkeypatch):
+        from collections import Counter
+        title, body, severity = self._run(monkeypatch, is_open=False, fills=(Counter(), {}))
+        assert severity == "default"
+        assert "PROBLEM" not in title and "PROBLEM" not in body
+        assert "Market closed" in body
+
+    def test_zero_fills_while_open_is_a_problem(self, monkeypatch):
+        from collections import Counter
+        title, body, severity = self._run(monkeypatch, is_open=True, fills=(Counter(), {}))
+        assert severity == "high"
+        assert "zero scalper fills" in body
+
+    def test_an_unreadable_clock_prefers_the_false_alarm(self, monkeypatch):
+        """Silence is the worse failure: alarm when the state is unknown."""
+        from collections import Counter
+
+        def fake_api(path):
+            if path == "/v2/clock":
+                raise RuntimeError("clock unreachable")
+            if path == "/v2/account":
+                return {"equity": "100000", "last_equity": "100000"}
+            if path.startswith("/v2/positions"):
+                return []
+            raise AssertionError(path)
+
+        monkeypatch.setattr(oc, "_api", fake_api)
+        monkeypatch.setattr(oc, "log_signatures", lambda since: {})
+        monkeypatch.setattr(oc, "units_status", lambda: (["x active restarts=0"], True))
+        monkeypatch.setattr(oc, "fills_today", lambda day: (Counter(), {}))
+        _, body, severity = oc.build_report("09:30:00")
+        assert severity == "high" and "zero scalper fills" in body
+
+    def test_a_dead_service_alarms_even_on_a_holiday(self, monkeypatch):
+        """A closed market excuses no fills. It does not excuse a dead agent."""
+        from collections import Counter
+        title, body, severity = self._run(
+            monkeypatch, is_open=False, fills=(Counter(), {}),
+            units=(["alpaca-agent inactive restarts=3"], False))
+        assert severity == "high"
+        assert "service is down" in body

@@ -101,12 +101,30 @@ vampire:
   # so far unproven at picking winners among the names that can.
   symbols:
     - QQQ
-    - SPY
-    - HOOD
     - TQQQ
-    # - SOXL   # removed 2026-08-31: shortable=false, easy_to_borrow=false.
-    #            A bi-directional scalper cannot run on a name with no borrow;
-    #            every short signal is a guaranteed venue refusal.
+    # - HOOD  # removed 2026-09-01 13:45 ET on measured P&L, not on a metric.
+    #           Realized -$567.93 across 2,740 fills, and negative in EVERY
+    #           hour of the session: -103, -169, -157, -104, -35. Five
+    #           consecutive losing hours is a structural bleed at these
+    #           thresholds, not variance. It also lost $79 on 2026-08-31, so
+    #           this is two sessions, both negative. HOOD was the top pick of
+    #           the move/spread ranking (12.52, an order of magnitude above
+    #           QQQ's 0.72); that ranking has now been wrong about the same
+    #           name twice, in the same direction. Its spread is also
+    #           unstable: sampled at 0.040, 0.060 and 0.160 within one
+    #           session, so the derived threshold kept moving under it.
+    # - SPY   # removed 2026-09-01 alongside HOOD. Smaller but the same shape:
+    #           -$55.45 realized, negative in every hour after the first, on
+    #           1,769 fills. On 2026-08-31 it was -$1.91 on 1,024 fills. Two
+    #           sessions, ~2,800 fills, no profitable hour to point at.
+    # - SOXL  # removed 2026-08-31: shortable=false, easy_to_borrow=false.
+    #           A bi-directional scalper cannot run on a name with no borrow;
+    #           every short signal is a guaranteed venue refusal.
+    #
+    # What survives is what has actually made money. QQQ is the only symbol
+    # profitable across both sessions (+$192.82 then +$14.55). TQQQ is roughly
+    # flat (-$21 today) and is kept as the second name so the sleeve is not a
+    # single-symbol bet, not because it has proven an edge.
   tick_threshold: 0.02
   position_size: 10
   max_position: 100

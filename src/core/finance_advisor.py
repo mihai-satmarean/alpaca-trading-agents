@@ -74,10 +74,35 @@ class CouncilDecision:
 
 
 def _llm_call(model: str, system: str, user: str,
-              max_tokens: int = 350, temperature: float = 0.2) -> str:
+              max_tokens: int | None = None, temperature: float = 0.2) -> str:
     base = os.environ.get("OPENAI_BASE_URL", "http://100.69.81.102:4000/v1").rstrip("/")
     key = os.environ.get("OPENAI_API_KEY") or os.environ.get("LITELLM_KEY") or ""
-    timeout = float(os.environ.get("COUNCIL_TIMEOUT", "25"))
+
+    # Several council models are reasoning models: they spend tokens on a
+    # hidden reasoning_content field before emitting an answer. At the old
+    # 350-token default that budget was consumed entirely by reasoning and the
+    # response came back with content=None and finish_reason "length", which
+    # _parse_verdict can only read as an abstention.
+    #
+    # That was not theoretical. On 2026-09-01 13:53 ET the council rejected a
+    # real HD buy 1 for / 1 against / 1 abstain, where the abstainer was
+    # dell4-chat reporting "model unavailable". With one of three voters
+    # structurally silenced, a gate designed as "2 of 3" was operating as
+    # 2 of 2 - effective unanimity - and it was blocking the largest sleeve
+    # from deploying.
+    #
+    # The cluster is self-hosted with no per-token cost, so the budget was the
+    # wrong thing to economize. Measured against the real endpoint at 4000:
+    # dell4-finance 2.0s, dell4-chat 12.5s, dell4-qwen38 34.5s, all returning
+    # real content with finish_reason "stop".
+    if max_tokens is None:
+        max_tokens = int(os.environ.get("COUNCIL_MAX_TOKENS", "4000"))
+
+    # The wall must clear the slowest advisor's measured latency at that
+    # budget. qwen38's 34.5s would have sat right on the old 25s+10s wall and
+    # been cancelled as a timeout abstention, trading one silent abstainer for
+    # another.
+    timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
 
     body = json.dumps({
         "model": model,
@@ -155,7 +180,11 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
     """Query all council members in parallel and tally votes."""
     opinions: list[AdvisorOpinion] = []
 
-    wall_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "25")) + 10
+    # Same default as _llm_call's per-request timeout, plus headroom. These
+    # two must not disagree: a wall shorter than the per-request timeout
+    # cancels advisors that were about to answer and records them as
+    # abstentions, which is the same silent-vote failure this file just fixed.
+    wall_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60")) + 10
 
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {}

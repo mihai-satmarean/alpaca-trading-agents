@@ -64,7 +64,9 @@ class BleedBudget:
     symbol: str
     profit_target: float
     loss_limit: float
+    patience_minutes: float = 60.0
     realized_pnl: float = 0.0
+    trade_count: int = 0
     started_at: datetime | None = None
     retired_at: datetime | None = None
     retire_reason: str = ""
@@ -82,8 +84,20 @@ class BleedBudget:
         return self.realized_pnl <= -self.loss_limit
 
     @property
+    def patience_expired(self) -> bool:
+        """True when the symbol has had enough time and produced nothing."""
+        if self.started_at is None:
+            return False
+        elapsed = (datetime.now(ET) - self.started_at).total_seconds() / 60.0
+        if elapsed < self.patience_minutes:
+            return False
+        # Patience expires only if P&L is flat or negative after the window.
+        # A symbol that is slowly profitable gets to keep going.
+        return self.realized_pnl <= 0.0
+
+    @property
     def should_retire(self) -> bool:
-        return self.target_reached or self.limit_hit
+        return self.target_reached or self.limit_hit or self.patience_expired
 
 
 @dataclass
@@ -100,6 +114,18 @@ class PickerConfig:
     loss_limit_per_symbol: float = 25.0
     retirement_cooldown_minutes: int = 30
     mid_session_rescan_interval: int = 1800
+
+    # Time management: how long to try a symbol before giving up
+    patience_minutes: float = 60.0        # give each symbol 1 hour max
+
+    # Capital preservation: the Vampire must never drain the sleeve to zero.
+    # When realized session losses reach this fraction of the sleeve budget,
+    # the Vampire stops hunting entirely and preserves whatever is left.
+    starvation_floor_pct: float = 0.30    # stop when 30% of sleeve is lost
+    # After hitting the floor, the Vampire enters "fasting mode": it keeps
+    # existing positions but opens no new ones, and waits for a recovery
+    # tick before closing them. This prevents panic-selling at the worst price.
+    fasting_mode: bool = True
 
 
 @dataclass
@@ -130,10 +156,22 @@ class VampireSymbolPicker:
         self._bleed_budgets: dict[str, BleedBudget] = {}
         self._retired: dict[str, datetime] = {}
         self._last_scan: datetime | None = None
+        self._is_fasting: bool = False
+        self._session_pnl: float = 0.0
 
     @property
     def bleed_budgets(self) -> dict[str, BleedBudget]:
         return dict(self._bleed_budgets)
+
+    @property
+    def is_fasting(self) -> bool:
+        """True when the Vampire has hit the starvation floor and stopped hunting."""
+        return self._is_fasting
+
+    @property
+    def starvation_floor(self) -> float:
+        """Dollar amount of loss that triggers fasting mode."""
+        return self._sleeve_budget * self.cfg.starvation_floor_pct
 
     def pick(self) -> SelectionResult:
         """Run the full pre-market scan and return top symbols with budgets."""
@@ -165,9 +203,34 @@ class VampireSymbolPicker:
     ) -> list[tuple[str, str]]:
         """Mid-session check: which symbols should be retired?
 
+        Also updates session P&L and checks the starvation floor.
         Returns list of (symbol, reason) pairs for symbols to drop.
         """
         retirements: list[tuple[str, str]] = []
+
+        # Update session-wide P&L from all engines
+        self._session_pnl = sum(
+            e.daily_pnl for e in engines.values() if hasattr(e, "daily_pnl")
+        )
+
+        # Starvation guard: if total session losses exceed the floor,
+        # stop hunting entirely. Keep existing positions to avoid panic selling.
+        if not self._is_fasting and self._session_pnl <= -self.starvation_floor:
+            self._is_fasting = True
+            log.warning(
+                "STARVATION FLOOR HIT: session P&L $%.2f exceeds -$%.2f floor. "
+                "Entering fasting mode -- no new trades, waiting for recovery.",
+                self._session_pnl, self.starvation_floor,
+            )
+            for sym, budget in self._bleed_budgets.items():
+                if budget.is_active:
+                    retirements.append((sym, f"starvation floor: session at ${self._session_pnl:.2f}"))
+                    budget.retired_at = datetime.now(ET)
+                    budget.retire_reason = "starvation_floor"
+            return retirements
+
+        if self._is_fasting:
+            return []
 
         for sym, budget in self._bleed_budgets.items():
             if not budget.is_active:
@@ -178,6 +241,7 @@ class VampireSymbolPicker:
                 continue
 
             budget.realized_pnl = engine.daily_pnl
+            budget.trade_count = len(getattr(engine, "bleeds", []))
 
             if budget.target_reached:
                 retirements.append((sym, f"target reached: ${budget.realized_pnl:.2f}"))
@@ -189,8 +253,18 @@ class VampireSymbolPicker:
                 budget.retired_at = datetime.now(ET)
                 budget.retire_reason = "loss_limit"
 
-            elif len(engine.bleeds) > 50 and engine.daily_pnl < -5.0:
-                retirements.append((sym, f"sustained loss after {len(engine.bleeds)} trades"))
+            elif budget.patience_expired:
+                elapsed = (datetime.now(ET) - budget.started_at).total_seconds() / 60
+                retirements.append((
+                    sym,
+                    f"patience expired: {elapsed:.0f}min, "
+                    f"P&L ${budget.realized_pnl:.2f}, {budget.trade_count} trades",
+                ))
+                budget.retired_at = datetime.now(ET)
+                budget.retire_reason = "patience_expired"
+
+            elif budget.trade_count > 50 and budget.realized_pnl < -5.0:
+                retirements.append((sym, f"sustained loss after {budget.trade_count} trades"))
                 budget.retired_at = datetime.now(ET)
                 budget.retire_reason = "sustained_loss"
 
@@ -202,7 +276,12 @@ class VampireSymbolPicker:
         """Find fresh victims to replace retired symbols.
 
         Respects the cooldown: recently retired symbols are not re-picked.
+        Returns empty list if in fasting mode (capital preservation).
         """
+        if self._is_fasting:
+            log.info("VampireSymbolPicker: fasting -- no replacements")
+            return []
+
         if not self._all_metrics:
             return []
 
@@ -421,6 +500,7 @@ class VampireSymbolPicker:
                 symbol=m.symbol,
                 profit_target=round(target, 2),
                 loss_limit=round(limit, 2),
+                patience_minutes=self.cfg.patience_minutes,
                 started_at=now,
             )
             budgets[m.symbol] = budget
@@ -439,5 +519,6 @@ class VampireSymbolPicker:
             symbol=m.symbol,
             profit_target=round(target, 2),
             loss_limit=round(limit, 2),
+            patience_minutes=self.cfg.patience_minutes,
             started_at=datetime.now(ET),
         )

@@ -502,12 +502,48 @@ class VampireEngine:
 
     def _flatten_all(self, reason: str):
         log.info("Flattening all vampire positions: %s (net=%d)", reason, self._net_position)
+        if self._net_position == 0:
+            return
         try:
-            if self._net_position != 0:
-                self._client.close_position(self.cfg.symbol)
-                self._net_position = 0
+            self._cancel_resting_orders()
+            self._client.close_position(self.cfg.symbol)
+            self._net_position = 0
         except Exception:
             log.exception("Flatten failed")
+
+    def _cancel_resting_orders(self) -> None:
+        """Clear this symbol's own resting orders before a close attempt.
+
+        close_position submits a new market order, and Alpaca refuses it
+        outright with a wash-trade rejection when an opposing order is
+        already resting on the same symbol. HOOD hit exactly this on
+        2026-09-01: the flatten call raised, the position was never
+        closed, and it rode through to the next process via startup
+        adoption instead - safe only because that adoption path exists.
+
+        Best-effort: a failure to read or cancel must not stop the close
+        attempt that follows. If the real conflict is something other
+        than our own resting order, cancelling ours won't have fixed it,
+        and close_position raising again is the honest outcome; silently
+        giving up here would only remove one legitimate attempt.
+        """
+        try:
+            orders = self._client.get_orders(status="open")
+        except Exception:
+            log.warning("%s: could not read open orders before flatten",
+                        self.cfg.symbol, exc_info=True)
+            return
+        for order in orders:
+            if getattr(order, "symbol", None) != self.cfg.symbol:
+                continue
+            oid = getattr(order, "id", None)
+            if oid is None:
+                continue
+            try:
+                self._client.cancel_order(str(oid))
+            except Exception:
+                log.warning("%s: could not cancel resting order %s before flatten",
+                            self.cfg.symbol, oid, exc_info=True)
 
     @property
     def realized_pnl(self) -> float:

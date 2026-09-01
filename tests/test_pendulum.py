@@ -296,3 +296,38 @@ class TestSleevesDoNotChargeEachOther:
         assert b.pendulum_used == pytest.approx(9_000.0)
         assert b.unattributed_used == pytest.approx(4_800.0)
         assert b.pendulum_budget == pytest.approx(15_000.0)
+
+
+class TestTheDataContractIsReal:
+    """A MagicMock invents any method asked of it, so a unit test that mocks
+    the data layer cannot tell whether the method exists. This asserts against
+    the real classes.
+
+    The scalper lost a session to exactly this: AlpacaClient.get_order did not
+    exist, every poll raised AttributeError, and the mock in the tests had been
+    fabricating it. Pendulum reproduced the bug within a day by guessing at an
+    attribute name with getattr.
+    """
+
+    def test_the_historical_client_exposes_get_stock_bars(self):
+        from alpaca.data.historical import StockHistoricalDataClient
+        assert hasattr(StockHistoricalDataClient, "get_stock_bars")
+
+    def test_market_data_service_holds_that_client_under_the_name_used(self):
+        from src.core.market_data import MarketDataService
+        client = MagicMock()
+        svc = MarketDataService(client)
+        assert svc._data is client.data, (
+            "PendulumAgent._daily_bars reaches through MarketDataService._data; "
+            "renaming that attribute breaks the daily bar fetch at runtime, "
+            "where no mocked test will see it"
+        )
+
+    def test_the_agent_asks_that_object_for_bars(self):
+        from src.agents.pendulum import PendulumAgent
+        data = MagicMock()
+        a = PendulumAgent(MagicMock(), data, MagicMock(), MagicMock(), MagicMock(),
+                          symbol="TLT")
+        data._data.get_stock_bars.return_value = MagicMock(data={"TLT": []})
+        a._daily_bars()
+        data._data.get_stock_bars.assert_called_once()

@@ -70,21 +70,102 @@ class SixfoldExecutor:
         held = self._held()
         return sum(v for k, v in held.items() if k not in self._excluded)
 
+    def run_disposals(self) -> list[dict]:
+        """Exit names the analyst no longer rates as holdable.
+
+        The analyst has always computed these (action "dispose" below 50, or
+        "avoid" below 40) and nothing ever consumed them, so the executor
+        could open a position and never close one. A scoring system whose
+        sell signal is unreachable is a buy-only system wearing a score.
+
+        Scope is deliberately just the disposition bands. SPEC 3.8 (exit) is
+        tagged [UNKNOWN. Second most important gap], and the spec's own
+        convention says [UNKNOWN] means implementation is blocked on it;
+        every rule inside it is [P], "proposed default that Tashi must
+        confirm or replace." So the +35% target, the gap-close exit and the
+        6-month time stop are NOT implemented here - they are the document
+        author's placeholders, not Tashi's rules, and building an automatic
+        seller on them would invent an authority the spec explicitly
+        disclaims. The bands below are different: they are the analyst's own
+        thresholds, already in this codebase and already driving the buy
+        side, so consuming them is self-consistent rather than invented.
+
+        SPEC 3.7's -30% single-name rail is also absent on purpose: the spec
+        says it "forces a logged human decision", not an automatic sale.
+
+        Exits are NOT gated on the advisory council. The council is a buy
+        gate; making an exit wait for AI approval would mean a cluster
+        outage silently blocks the system from leaving a deteriorating
+        position, which inverts the safety it exists to provide.
+        """
+        try:
+            flagged = {s.upper() for s in self._analyst.get_disposal_candidates()}
+        except Exception:
+            log.exception("SIXFOLD analyst unavailable for disposals")
+            return []
+        if not flagged:
+            return []
+
+        held = self._held()
+        sold: list[dict] = []
+
+        for sym in sorted(flagged & set(held)):
+            if sym in self._excluded:
+                # Another sleeve owns this ticker; selling it here would close
+                # a position this strategy never opened.
+                self._reject(sym, "flagged for disposal but owned by another sleeve")
+                continue
+
+            score_obj = None
+            try:
+                score_obj = self._analyst.scores.get(sym)
+            except Exception:
+                # Reporting only: the sale is driven by the analyst's action
+                # band, not by this number, so an unreadable score must not
+                # block the exit. Logged rather than swallowed.
+                log.warning("%s: score unreadable for the disposal record",
+                            sym, exc_info=True)
+            composite = float(getattr(score_obj, "composite_score", 0.0) or 0.0)
+
+            try:
+                self._client.close_position(sym)
+            except Exception:
+                log.exception("SIXFOLD disposal failed for %s", sym)
+                self._reject(sym, "broker rejected the disposal")
+                continue
+
+            entry = {"strategy": "sixfold", "symbol": sym, "side": "sell",
+                     "notional": round(held[sym], 2), "score": composite,
+                     "reason": f"SIXFOLD disposal: score {composite:.1f} below the hold band"}
+            sold.append(entry)
+            self.last_orders.append(entry)
+            log.info("SIXFOLD disposed %s (score %.1f, $%.0f)",
+                     sym, composite, held[sym])
+
+        return sold
+
     def run_cycle(self) -> dict:
         self.last_orders, self.last_rejections = [], []
 
         if not self._breaker.check():
             return {"status": "breaker_active", "orders": []}
 
+        # Disposals run before buys: a name the analyst has just downgraded
+        # must not be bought back in the same cycle, and the freed capital
+        # should be available to the buy pass that follows.
+        disposed = self.run_disposals()
+
         sleeve = float(getattr(self._allocator.get_budget(), "sixfold_budget", 0.0))
         if sleeve <= 0:
-            return {"status": "no_sleeve", "orders": []}
+            # Disposals already happened and must still be reported: an exit
+            # is not conditional on there being budget left to buy with.
+            return {"status": "no_sleeve", "orders": [], "disposals": disposed}
 
         try:
             candidates = self._analyst.get_buy_candidates()
         except Exception:
             log.exception("SIXFOLD analyst unavailable")
-            return {"status": "analyst_error", "orders": []}
+            return {"status": "analyst_error", "orders": [], "disposals": disposed}
 
         held = self._held()
         budget_each = self.position_budget()
@@ -167,7 +248,8 @@ class SixfoldExecutor:
                                        price=limit, strategy="sixfold")
             log.info("SIXFOLD bought %d %s at %.2f (%s)", qty, sym, limit, f"${notional:,.0f}")
 
-        return {"status": "ok", "orders": placed, "rejections": self.last_rejections}
+        return {"status": "ok", "orders": placed, "disposals": disposed,
+                "rejections": self.last_rejections}
 
     def _quote(self, symbol: str) -> float | None:
         try:

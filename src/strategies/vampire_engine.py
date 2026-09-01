@@ -28,6 +28,16 @@ log = logging.getLogger(__name__)
 SESSION_START = dt_time(9, 30)
 SESSION_END = dt_time(15, 55)
 
+# 2026-09-01, the first live session on EC2: 28 orders exceeded the 2.0s poll
+# and fell through to "assume filled." Every one of them landed between
+# 09:30:33 and 09:37:15 - two dense clusters in the opening minutes, zero
+# anywhere in the 25+ minutes that followed. Opening order flow is
+# congested in a way the rest of the session isn't; the fix is a wider
+# window there, not a permanently longer one, since a longer poll blocks
+# tick processing for every order that takes it, and that cost is worst
+# exactly when the market is moving fastest.
+OPENING_WINDOW_END = dt_time(9, 40)
+
 
 class VampireState(str, Enum):
     IDLE = "idle"
@@ -355,6 +365,7 @@ class VampireEngine:
             self._state = VampireState.STOPPED
 
     POLL_TIMEOUT = 2.0        # IOC resolves in ~100ms; this is a generous ceiling
+    OPENING_POLL_TIMEOUT = 4.0   # doubled; only applies through OPENING_WINDOW_END
     POLL_INTERVAL = 0.05
 
     def _submit(self, qty: int, price: float, side: OrderSide) -> int:
@@ -412,7 +423,11 @@ class VampireEngine:
             log.warning("%s: order carries no id; assuming it filled", self.cfg.symbol)
             return qty
 
-        deadline = time.time() + self.POLL_TIMEOUT
+        # Captured once, not re-read on every loop iteration: a poll that starts
+        # inside the opening window and finishes after it must not have its
+        # deadline or its log message disagree about which budget applied.
+        poll_timeout = self._current_poll_timeout()
+        deadline = time.time() + poll_timeout
         while time.time() < deadline:
             time.sleep(self.POLL_INTERVAL)
             try:
@@ -425,8 +440,15 @@ class VampireEngine:
                 return self._filled_or(polled, qty)
 
         log.warning("%s: order %s did not resolve in %.1fs; assuming it filled",
-                    self.cfg.symbol, oid, self.POLL_TIMEOUT)
+                    self.cfg.symbol, oid, poll_timeout)
         return qty
+
+    def _current_poll_timeout(self) -> float:
+        """The fill-confirmation budget for a submission starting right now."""
+        now = datetime.now(ZoneInfo("America/New_York")).time()
+        if SESSION_START <= now < OPENING_WINDOW_END:
+            return self.OPENING_POLL_TIMEOUT
+        return self.POLL_TIMEOUT
 
     @staticmethod
     def _is_terminal(status) -> bool:

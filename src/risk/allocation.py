@@ -78,6 +78,7 @@ class AllocationConfig:
     vampire_pct: float = 0.15
     reserve_pct: float = 0.05
     sixfold_pct: float = 0.0
+    pendulum_pct: float = 0.0
 
     @classmethod
     def from_config(cls) -> AllocationConfig:
@@ -87,6 +88,7 @@ class AllocationConfig:
             vampire_pct=cfg.vampire_pct,
             reserve_pct=cfg.reserve_pct,
             sixfold_pct=cfg.sixfold_pct,
+            pendulum_pct=cfg.pendulum_pct,
         )
 
 
@@ -102,6 +104,8 @@ class AllocationBudget:
     vampire_available: float
     unattributed_used: float = 0.0
     sixfold_budget: float = 0.0
+    pendulum_budget: float = 0.0
+    pendulum_used: float = 0.0
 
 
 class AllocationManager:
@@ -119,6 +123,10 @@ class AllocationManager:
         self._vampire_symbols = {
             s.upper() for s in (vampire_symbols or cfg.vampire_symbols)
         }
+        # Pendulum holds one ticker. Without its own bucket that holding falls
+        # to `unattributed`, which is where SIXFOLD's equity also lands, and
+        # the two sleeves would then be charged for each other's positions.
+        self._pendulum_symbol = cfg.pendulum_symbol
 
     def _classify(self, symbol: str, position: dict) -> str:
         """Which sleeve a position belongs to: options | vampire | unattributed.
@@ -135,6 +143,8 @@ class AllocationManager:
             return "options"
         if symbol.upper() in self._vampire_symbols:
             return "vampire"
+        if symbol.upper() == self._pendulum_symbol:
+            return "pendulum"
         return "unattributed"
 
     def get_budget(self) -> AllocationBudget:
@@ -145,7 +155,7 @@ class AllocationManager:
         vampire_budget = equity * self.config.vampire_pct
         reserve_target = equity * self.config.reserve_pct
 
-        used = {"options": 0.0, "vampire": 0.0, "unattributed": 0.0}
+        used = {"options": 0.0, "vampire": 0.0, "pendulum": 0.0, "unattributed": 0.0}
         for sym, pos in snapshot.positions.items():
             used[self._classify(sym, pos)] += capital_committed(sym, pos)
 
@@ -160,6 +170,8 @@ class AllocationManager:
             vampire_available=max(0.0, vampire_budget - used["vampire"]),
             unattributed_used=used["unattributed"],
             sixfold_budget=equity * self.config.sixfold_pct,
+            pendulum_budget=equity * self.config.pendulum_pct,
+            pendulum_used=used["pendulum"],
         )
 
     def can_allocate_options(self, amount: float) -> bool:

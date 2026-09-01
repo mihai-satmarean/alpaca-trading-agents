@@ -16,6 +16,7 @@ from datetime import time as dt_time
 from zoneinfo import ZoneInfo
 
 from src.agents.options_income import OptionsIncomeAgent
+from src.agents.pendulum import PendulumAgent
 from src.agents.risk_manager import RiskManagerAgent
 from src.agents.sixfold_analyst import SixfoldAnalystAgent
 from src.agents.vampire import VampireAgent
@@ -25,6 +26,7 @@ from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
+from src.strategies.pendulum import PendulumParams
 from src.strategies.sixfold_executor import SixfoldExecutor
 
 log = logging.getLogger(__name__)
@@ -68,6 +70,25 @@ class Coordinator:
             config_overrides=({"paused_until": cfg.vampire_paused_until}
                               if cfg.vampire_paused_until else None),
         )
+        pend = dict(cfg.pendulum or {})
+        self._pendulum_agent = PendulumAgent(
+            self._client, self._data, self._tracker, self._breaker, self._allocator,
+            symbol=cfg.pendulum_symbol,
+            params=PendulumParams(
+                entry_z=float(pend.get("entry_z", -2.0)),
+                entry_rsi=float(pend.get("entry_rsi", 10)),
+                add_z=float(pend.get("add_z", -2.75)),
+                exit_rsi=float(pend.get("exit_rsi", 70)),
+                time_stop_days=int(pend.get("time_stop_days", 10)),
+                atr_mult=float(pend.get("atr_mult", 1.5)),
+                hard_stop_pct=float(pend.get("hard_stop_pct", 0.05)),
+                regime_lookback=int(pend.get("regime_lookback", 200)),
+                allow_below_regime=bool(pend.get("allow_below_regime", False)),
+            ),
+            risk_per_trade=float(pend.get("risk_per_trade", 0.01)),
+            first_tranche=float(pend.get("first_tranche", 0.6)),
+        ) if cfg.pendulum_pct > 0 else None
+
         self._risk_agent = RiskManagerAgent(
             self._client, self._tracker, self._breaker, self._allocator
         )
@@ -90,7 +111,7 @@ class Coordinator:
             self._sixfold_executor = SixfoldExecutor(
                 self._client, self._data, self._tracker, self._breaker,
                 self._allocator, analyst,
-                excluded=set(cfg.vampire_symbols or []),
+                excluded=set(cfg.vampire_symbols or []) | {cfg.pendulum_symbol},
             )
 
         self._running = False
@@ -122,6 +143,8 @@ class Coordinator:
                 "options_budget": budget.options_budget,
                 "vampire_used": budget.vampire_used,
                 "vampire_budget": budget.vampire_budget,
+                "pendulum_budget": budget.pendulum_budget,
+                "pendulum_used": budget.pendulum_used,
                 "unattributed_used": budget.unattributed_used,
                 "reserve_target": budget.reserve_target,
             },
@@ -185,6 +208,17 @@ class Coordinator:
                             log.info("SIXFOLD placed %d orders", len(result["orders"]))
                     except Exception:
                         log.exception("SIXFOLD cycle failed")
+
+                # Pendulum decides once a day on the prior close and acts at
+                # the open. should_run() carries the once-a-day guard, so the
+                # 10-minute loop calling it repeatedly is harmless.
+                if self._pendulum_agent is not None and self._pendulum_agent.should_run():
+                    try:
+                        r = self._pendulum_agent.run_cycle()
+                        log.info("PENDULUM %s -> %s (%s)", r.get("signal"),
+                                 r.get("action", "none"), r.get("reason", ""))
+                    except Exception:
+                        log.exception("PENDULUM cycle failed")
 
                 if self._allocator.needs_rebalance():
                     log.info("Rebalancing allocations")

@@ -142,7 +142,7 @@ class TestConfigDrivesBehaviour:
         cfg = load_config()
         assert cfg.validate() == []
         assert (cfg.sixfold_pct + cfg.options_pct + cfg.vampire_pct
-                + cfg.reserve_pct) == pytest.approx(1.0)
+                + cfg.pendulum_pct + cfg.reserve_pct) == pytest.approx(1.0)
         for pct in (cfg.sixfold_pct, cfg.options_pct, cfg.vampire_pct, cfg.reserve_pct):
             assert 0.0 <= pct <= 1.0
 
@@ -161,11 +161,16 @@ class TestConfigDrivesBehaviour:
         confirm the number was meant to move before editing it.
         """
         cfg = load_config()
-        assert (cfg.sixfold_pct, cfg.options_pct) == (0.50, 0.20)
-        assert cfg.vampire_pct == 0.20, "scalper at the full original allocation"
+        # Reallocated 2026-09-01 to fund Pendulum: five points each out of
+        # sixfold, options and vampire.
+        assert (cfg.sixfold_pct, cfg.options_pct) == (0.45, 0.15)
+        assert cfg.vampire_pct == 0.15
+        assert cfg.pendulum_pct == 0.15, "Pendulum funded at the agreed 15%"
         assert cfg.reserve_pct == 0.10
-        assert cfg.vampire_pct + cfg.reserve_pct == pytest.approx(0.30), (
-            "scalper headroom comes out of reserve and nowhere else"
+        assert (cfg.sixfold_pct + cfg.options_pct + cfg.vampire_pct
+                + cfg.pendulum_pct + cfg.reserve_pct) == pytest.approx(1.0), (
+            "every sleeve plus reserve must account for the whole account; a "
+            "split that sums under 1.0 leaves capital nobody is measuring"
         )
 
     def test_sixfold_budget_is_reported_even_though_it_cannot_trade(self):
@@ -174,7 +179,8 @@ class TestConfigDrivesBehaviour:
         tracker = MagicMock()
         tracker.get_snapshot.return_value = _snapshot(equity=100_000)
         budget = AllocationManager(tracker, AllocationConfig.from_config()).get_budget()
-        assert budget.sixfold_budget == pytest.approx(50_000.0)
+        assert budget.sixfold_budget == pytest.approx(45_000.0)
+        assert budget.pendulum_budget == pytest.approx(15_000.0)
 
     def test_every_csp_symbol_is_affordable_at_the_options_sleeve(self):
         """A contract whose collateral exceeds the sleeve can never be sold.

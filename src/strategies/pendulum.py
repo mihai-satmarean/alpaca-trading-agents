@@ -52,7 +52,11 @@ class PendulumParams:
     rsi_period: int = 2
     atr_period: int = 14
     allow_below_regime: bool = False   # the spec's "aggressive" mode
+    # The spec's aggressive mode is three changes, not one: allow the entry,
+    # "cut position size in half AND tighten the stop". Wiring only the flag
+    # arms something more aggressive than the spec's aggressive.
     below_regime_size_mult: float = 0.5
+    below_regime_atr_mult: float = 1.0   # vs 1.5 normally; inside the spec's 1.0-2.0 range
 
 
 @dataclass
@@ -160,18 +164,26 @@ class Position:
     tranches: int = 1
 
 
-def stop_price(entry: float, atr: float | None, p: PendulumParams) -> float:
-    """The tighter of 1.5 x ATR and the percentage floor, per the spec.
+def stop_price(entry: float, atr: float | None, p: PendulumParams,
+               below_regime: bool = False) -> float:
+    """The tighter of the ATR stop and the percentage floor, per the spec.
 
     'whichever is tighter' means the HIGHER stop price for a long, since that
     is the one hit first. Taking the lower would widen the stop exactly when
     volatility spikes, which is backwards.
+
+    Below the 200-day the ATR multiple drops from 1.5 to 1.0, which is the
+    "tighten the stop" half of the spec's aggressive mode. The regime is
+    evaluated live rather than recorded at entry, so a position whose regime
+    deteriorates while it is open gets the tighter stop from that day on --
+    which is when the protection is actually wanted.
     """
+    mult = p.below_regime_atr_mult if below_regime else p.atr_mult
     pct_stop = entry * (1 - p.hard_stop_pct)
     ceiling = entry * (1 - p.min_stop_pct)   # never tighter than this
     if atr is None:
         return min(pct_stop, ceiling)
-    return min(max(entry - p.atr_mult * atr, pct_stop), ceiling)
+    return min(max(entry - mult * atr, pct_stop), ceiling)
 
 
 def decide(ind: Indicators, pos: Position | None,
@@ -193,7 +205,8 @@ def decide(ind: Indicators, pos: Position | None,
             return Signal.EXIT, f"overbought (RSI {ind.rsi:.1f} > {p.exit_rsi:.0f})"
         if pos.bars_held >= p.time_stop_days:
             return Signal.EXIT, f"time stop ({pos.bars_held} days without reverting)"
-        sp = stop_price(pos.entry_price, ind.atr, p)
+        sp = stop_price(pos.entry_price, ind.atr, p,
+                        below_regime=ind.close < ind.sma_regime)
         if ind.close < sp:
             return Signal.EXIT, f"hard stop (close {ind.close:.2f} < {sp:.2f})"
         if ind.z <= p.add_z and pos.tranches < 2:

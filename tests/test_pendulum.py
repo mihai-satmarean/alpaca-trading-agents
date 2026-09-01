@@ -331,3 +331,53 @@ class TestTheDataContractIsReal:
         data._data.get_stock_bars.return_value = MagicMock(data={"TLT": []})
         a._daily_bars()
         data._data.get_stock_bars.assert_called_once()
+
+
+class TestAggressiveModeIsAllThreeChanges:
+    """The spec's aggressive mode is 'allow entries below the 200-day SMA but
+    cut position size in half and tighten the stop'. Wiring only the flag arms
+    something MORE aggressive than the spec's aggressive, which is how a
+    permission becomes a risk increase nobody chose.
+    """
+
+    AGG = PendulumParams(allow_below_regime=True)
+
+    def test_the_flag_alone_would_not_have_been_enough(self):
+        """below_regime_size_mult existed as a field and nothing read it."""
+        assert self.AGG.below_regime_size_mult == 0.5
+        assert self.AGG.below_regime_atr_mult < self.AGG.atr_mult
+
+    def test_the_stop_is_tighter_below_the_regime(self):
+        loose = stop_price(82.0, 0.66, self.AGG, below_regime=False)
+        tight = stop_price(82.0, 0.66, self.AGG, below_regime=True)
+        assert tight > loose, "a tighter stop for a long is a HIGHER price"
+
+    def test_the_stop_is_unchanged_above_the_regime(self):
+        assert stop_price(82.0, 0.66, self.AGG, below_regime=False) == \
+               stop_price(82.0, 0.66, P, below_regime=False)
+
+    def test_decide_applies_the_tighter_stop_when_below(self):
+        pos = Position(entry_price=82.0, shares=10)
+        # 81.20 is inside the 1.5-ATR stop (81.01) but outside the 1.0 (81.34)
+        below = _ind(close=81.20, sma_=83.0, std=1.0, rsi=30, sma200=90.0, atr=0.66)
+        assert decide(below, pos, self.AGG)[0] is Signal.EXIT
+        above = _ind(close=81.20, sma_=83.0, std=1.0, rsi=30, sma200=70.0, atr=0.66)
+        assert decide(above, pos, self.AGG)[0] is Signal.HOLD
+
+    def test_size_is_halved_below_the_regime(self):
+        from src.agents.pendulum import PendulumAgent
+        client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
+        tracker.get_snapshot.return_value = MagicMock(equity=100_000.0, positions={})
+        allocator.get_budget.return_value = MagicMock(pendulum_budget=15_000.0,
+                                                      pendulum_used=0.0)
+        a = PendulumAgent(client, data, tracker, breaker, allocator,
+                          symbol="TLT", params=self.AGG)
+        above = a._size(85.0, _ind(close=85.0, sma200=70.0, atr=0.65), is_add=False)
+        below = a._size(85.0, _ind(close=85.0, sma200=95.0, atr=0.65), is_add=False)
+        assert below == above // 2 or below == pytest.approx(above / 2, abs=1)
+
+    def test_conservative_mode_still_refuses_the_entry_entirely(self):
+        """Half size is not a substitute for the filter. In the default mode
+        the entry does not happen at all."""
+        i = _ind(close=90.0, sma_=105.0, std=2.0, rsi=3.0, sma200=120.0)
+        assert decide(i, None, P)[0] is Signal.NO_TRADE

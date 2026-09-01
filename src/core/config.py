@@ -56,6 +56,16 @@ class StrategyConfig:
         return list(self.vampire.get("symbols", []))
 
     @property
+    def vampire_paused_until(self) -> str | None:
+        """ISO date the scalper resumes, or None when it is running.
+
+        Read here rather than defaulted in the engine so the halt is visible
+        in the same file that documents why it happened.
+        """
+        v = self.vampire.get("paused_until")
+        return str(v) if v else None
+
+    @property
     def csp(self) -> dict[str, Any]:
         return dict(self.options.get("csp", {}))
 

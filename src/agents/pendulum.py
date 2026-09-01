@@ -64,8 +64,15 @@ class PendulumAgent:
         the close. Feeding it to the indicators would compute a 'close' that
         is really a mid-morning price, so today is dropped explicitly rather
         than trusted to be absent.
+
+        MarketDataService wraps the SDK's historical client as `_data` and
+        exposes no daily-bar method of its own, so this reaches through to it.
+        An earlier version guessed at the attribute with a getattr chain that
+        fell through to MarketDataService itself and raised AttributeError on
+        the first live call; the unit test missed it because a MagicMock
+        happily invents get_stock_bars. Hence the contract test.
         """
-        client = self._history or getattr(self._data, "_client", None) or self._data
+        client = self._history or self._data._data
         req = StockBarsRequest(
             symbol_or_symbols=self.symbol, timeframe=TimeFrame.Day,
             start=dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=HISTORY_DAYS),

@@ -2,6 +2,7 @@
 
 All LLM calls are mocked -- these tests verify consensus logic,
 parallel execution, and graceful degradation.
+Updated for the 4-model council (Fino1-14B added as Financial Reasoner).
 """
 
 from __future__ import annotations
@@ -20,6 +21,13 @@ from src.core.finance_advisor import (
     COUNCIL_MODELS,
     CONSENSUS_THRESHOLD,
 )
+
+FOUR_ROLES = {
+    "Finance Specialist": "sys",
+    "Financial Reasoner": "sys",
+    "General Strategist": "sys",
+    "Risk Analyst": "sys",
+}
 
 
 class TestParseVerdict:
@@ -63,21 +71,28 @@ class TestCouncilDecision:
     def test_approved_when_unanimous(self):
         d = CouncilDecision(
             action="buy", symbol="JPM", approved=True,
-            votes_for=3, votes_against=0, abstentions=0,
+            votes_for=4, votes_against=0, abstentions=0,
         )
         assert d.approved
 
-    def test_approved_with_2_of_3(self):
+    def test_approved_with_3_of_4(self):
         d = CouncilDecision(
             action="buy", symbol="JPM", approved=True,
-            votes_for=2, votes_against=1, abstentions=0,
+            votes_for=3, votes_against=1, abstentions=0,
         )
         assert d.approved
 
-    def test_rejected_with_2_against(self):
+    def test_approved_with_2_of_4(self):
+        d = CouncilDecision(
+            action="buy", symbol="JPM", approved=True,
+            votes_for=2, votes_against=2, abstentions=0,
+        )
+        assert d.approved
+
+    def test_rejected_with_3_against(self):
         d = CouncilDecision(
             action="buy", symbol="JPM", approved=False,
-            votes_for=1, votes_against=2, abstentions=0,
+            votes_for=1, votes_against=3, abstentions=0,
         )
         assert not d.approved
 
@@ -86,80 +101,71 @@ class TestCouncilDecision:
 class TestRunCouncil:
     def test_unanimous_approval(self, mock_llm):
         mock_llm.return_value = "APPROVE. Strong fundamentals support this trade."
-        decision = _run_council(
-            "buy", "JPM",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy JPM",
-        )
+        decision = _run_council("buy", "JPM", FOUR_ROLES, "Buy JPM")
         assert decision.approved
-        assert decision.votes_for == 3
+        assert decision.votes_for == 4
         assert decision.votes_against == 0
-        assert len(decision.opinions) == 3
+        assert len(decision.opinions) == 4
 
     def test_unanimous_rejection(self, mock_llm):
         mock_llm.return_value = "REJECT. Overvalued and risky."
-        decision = _run_council(
-            "buy", "TSLA",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy TSLA",
-        )
+        decision = _run_council("buy", "TSLA", FOUR_ROLES, "Buy TSLA")
         assert not decision.approved
-        assert decision.votes_against == 3
+        assert decision.votes_against == 4
 
-    def test_split_decision_2_1_passes(self, mock_llm):
+    def test_split_decision_3_1_passes(self, mock_llm):
         mock_llm.side_effect = [
             "APPROVE. Good value.",
+            "APPROVE. Numerical metrics align.",
             "APPROVE. Market timing is right.",
             "REJECT. Too much downside risk.",
         ]
-        decision = _run_council(
-            "buy", "V",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy V",
-        )
+        decision = _run_council("buy", "V", FOUR_ROLES, "Buy V")
         assert decision.approved
-        assert decision.votes_for == 2
+        assert decision.votes_for == 3
         assert decision.votes_against == 1
 
-    def test_split_decision_1_2_fails(self, mock_llm):
+    def test_split_decision_2_2_passes(self, mock_llm):
         mock_llm.side_effect = [
             "APPROVE. Decent fundamentals.",
+            "APPROVE. FinQA analysis supports this.",
             "REJECT. Sector is weak.",
             "REJECT. Concentration risk.",
         ]
-        decision = _run_council(
-            "buy", "KO",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy KO",
-        )
+        decision = _run_council("buy", "KO", FOUR_ROLES, "Buy KO")
+        assert decision.approved
+        assert decision.votes_for == 2
+        assert decision.votes_against == 2
+
+    def test_split_decision_1_3_fails(self, mock_llm):
+        mock_llm.side_effect = [
+            "APPROVE. Decent fundamentals.",
+            "REJECT. Valuation not supported.",
+            "REJECT. Sector is weak.",
+            "REJECT. Concentration risk.",
+        ]
+        decision = _run_council("buy", "KO", FOUR_ROLES, "Buy KO")
         assert not decision.approved
         assert decision.votes_for == 1
-        assert decision.votes_against == 2
+        assert decision.votes_against == 3
 
     def test_model_failure_counts_as_abstention(self, mock_llm):
         mock_llm.side_effect = [
             "APPROVE. Solid pick.",
             Exception("model timeout"),
             "APPROVE. Low risk.",
+            "APPROVE. Strong balance sheet.",
         ]
-        decision = _run_council(
-            "buy", "HD",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy HD",
-        )
+        decision = _run_council("buy", "HD", FOUR_ROLES, "Buy HD")
         assert decision.approved
-        assert decision.votes_for == 2
+        assert decision.votes_for == 3
         assert decision.abstentions == 1
 
     def test_all_models_fail_proceeds_on_deterministic(self, mock_llm):
         mock_llm.side_effect = Exception("all down")
-        decision = _run_council(
-            "buy", "PG",
-            {"Finance Specialist": "sys", "General Strategist": "sys", "Risk Analyst": "sys"},
-            "Buy PG",
-        )
-        assert decision.approved  # insufficient quorum -> proceed
-        assert decision.abstentions == 3
+        decision = _run_council("buy", "PG", FOUR_ROLES, "Buy PG")
+        assert decision.approved
+        assert decision.abstentions == 4
         assert "quorum" in decision.summary.lower()
 
 
@@ -200,7 +206,7 @@ class TestWallTimeoutIsContained:
         with patch.object(fa, "as_completed", side_effect=TimeoutError):
             d = fa._run_council("buy", "JPM", {"default": "x"}, "prompt")
         assert d.approved, "quorum 0 must fall back to the deterministic signal"
-        assert d.abstentions == 3
+        assert d.abstentions == len(COUNCIL_MODELS)
         assert all(not o.responded for o in d.opinions)
         assert "quorum" in d.summary.lower() or "deterministic" in d.summary.lower()
 

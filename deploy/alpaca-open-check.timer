@@ -1,0 +1,13 @@
+[Unit]
+Description=Run the Alpaca post-open verification after the 09:30 ET open
+
+[Timer]
+# 09:36 catches a broken open while the session is still young. 10:30 answers
+# how the first hour actually went. Both in ET, which is why the units pin TZ:
+# the box runs UTC and OnCalendar would otherwise fire four hours out.
+OnCalendar=Mon-Fri 09:36 America/New_York
+OnCalendar=Mon-Fri 10:30 America/New_York
+Persistent=false
+
+[Install]
+WantedBy=timers.target

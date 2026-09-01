@@ -18,6 +18,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
 from src.core.finance_advisor import evaluate_equity_buy
+from src.strategies.bull_call_spread import BullCallSpreadStrategy, SpreadConfig
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +41,9 @@ class SixfoldOrder:
 class SixfoldExecutor:
     def __init__(self, client, data, tracker, breaker, allocator, analyst,
                  excluded: set[str] | None = None,
-                 max_concurrent: int = MAX_CONCURRENT):
+                 max_concurrent: int = MAX_CONCURRENT,
+                 chain=None,
+                 enable_spreads: bool = True):
         self._client = client
         self._data = data
         self._tracker = tracker
@@ -51,6 +54,12 @@ class SixfoldExecutor:
         self._max_concurrent = max_concurrent
         self.last_orders: list[dict] = []
         self.last_rejections: list[dict] = []
+        self._spread_strategy: BullCallSpreadStrategy | None = None
+        if enable_spreads and chain is not None:
+            self._spread_strategy = BullCallSpreadStrategy(
+                client=client, chain=chain, data=data, tracker=tracker,
+                allocator=allocator, breaker=breaker,
+            )
 
     def _held(self) -> dict[str, float]:
         snap = self._tracker.get_snapshot()
@@ -167,7 +176,38 @@ class SixfoldExecutor:
                                        price=limit, strategy="sixfold")
             log.info("SIXFOLD bought %d %s at %.2f (%s)", qty, sym, limit, f"${notional:,.0f}")
 
-        return {"status": "ok", "orders": placed, "rejections": self.last_rejections}
+        spread_orders = self._run_spreads(candidates)
+
+        return {
+            "status": "ok",
+            "orders": placed,
+            "spread_orders": spread_orders,
+            "rejections": self.last_rejections,
+        }
+
+    def _run_spreads(self, candidates: list) -> list[dict]:
+        """Open bull call spreads on SIXFOLD buy candidates.
+
+        Allocates up to 20% of the SIXFOLD sleeve to spreads. This gives
+        leveraged upside exposure with defined max loss (the debit paid),
+        complementing the direct equity positions.
+        """
+        if self._spread_strategy is None:
+            return []
+
+        symbols = [s.upper() for s in candidates
+                   if s.upper() not in self._excluded]
+        if not symbols:
+            return []
+
+        try:
+            orders = self._spread_strategy.execute(symbols)
+            for o in orders:
+                self.last_orders.append(o)
+            return orders
+        except Exception:
+            log.exception("Bull call spread execution failed")
+            return []
 
     def _quote(self, symbol: str) -> float | None:
         try:

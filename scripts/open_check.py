@@ -148,6 +148,14 @@ def build_report(since: str) -> tuple[str, str, str]:
     if sig.get("mcp_failures"):
         problems.append("MCP down, CSP cannot scan")
 
+    # systemd OnCalendar knows weekdays, not market holidays. Without this the
+    # check alarms on Thanksgiving and Christmas, and a monitor that cries wolf
+    # on a closed market is one nobody reads by December.
+    try:
+        session_open = bool(_api("/v2/clock")["is_open"])
+    except Exception:
+        session_open = True          # unknown: prefer a false alarm to silence
+
     acct = _api("/v2/account")
     equity, prior = float(acct["equity"]), float(acct["last_equity"])
 
@@ -162,11 +170,16 @@ def build_report(since: str) -> tuple[str, str, str]:
 
     n, cash = fills_today(day)
     total_fills = sum(n.values())
-    if total_fills == 0:
+    if total_fills == 0 and session_open:
         problems.append("zero scalper fills")
 
-    lines = [f"{'PROBLEM: ' + '; '.join(problems) if problems else 'Open OK'}",
-             f"equity ${equity:,.2f}  day {equity - prior:+,.2f}"]
+    if problems:
+        headline = "PROBLEM: " + "; ".join(problems)
+    elif not session_open:
+        headline = "Market closed, nothing to verify"
+    else:
+        headline = "Open OK"
+    lines = [headline, f"equity ${equity:,.2f}  day {equity - prior:+,.2f}"]
 
     if n:
         pnl_total = 0.0
@@ -184,8 +197,12 @@ def build_report(since: str) -> tuple[str, str, str]:
     lines.append("log: " + (", ".join(f"{k}={v}" for k, v in sorted(sig.items())) or "clean"))
 
     severity = "high" if problems else "default"
-    title = ("Alpaca PROBLEM at the open" if problems
-             else f"Alpaca open OK {now:%H:%M} ET")
+    if problems:
+        title = "Alpaca PROBLEM at the open"
+    elif not session_open:
+        title = f"Alpaca market closed {now:%H:%M} ET"
+    else:
+        title = f"Alpaca open OK {now:%H:%M} ET"
     return title, "\n".join(lines), severity
 
 

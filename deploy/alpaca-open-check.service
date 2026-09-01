@@ -1,0 +1,17 @@
+[Unit]
+# Verification must be able to say "the agent is not running", which the agent
+# itself can never do. Separate process, separate timer, read-only.
+Description=ProductAdvisors Alpaca post-open verification
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/opt/alpaca-agent
+EnvironmentFile=/opt/alpaca-agent/.env
+Environment=TZ=America/New_York
+ExecStart=/opt/alpaca-agent/.venv/bin/python scripts/open_check.py 09:30:00
+StandardOutput=append:/opt/alpaca-agent/logs/open-check.log
+StandardError=append:/opt/alpaca-agent/logs/open-check.log
+# A failing check is a report, not a unit failure; the report is the product.
+SuccessExitStatus=0 1

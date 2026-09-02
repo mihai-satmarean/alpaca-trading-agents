@@ -32,6 +32,7 @@ class SleeveBook:
     realized_pnl: float | None
     positions: int
     fills_today: int
+    notional_today: float = 0.0
     holdings: list[dict] = field(default_factory=list)
 
 
@@ -88,7 +89,16 @@ def fills_today_by_agent() -> dict[str, int]:
     return counts
 
 
-def _empty(agent: str, label: str, budget: float, fills: int) -> SleeveBook:
+def notional_today_by_agent(snap: dict | None = None) -> dict[str, float]:
+    totals = {"vampire": 0.0, "sixfold": 0.0, "options": 0.0, "csp": 0.0, "pendulum": 0.0}
+    data = snap if snap is not None else read_snapshot()
+    for info in (data.get("vampire") or {}).values():
+        if isinstance(info, dict):
+            totals["vampire"] += float(info.get("notional_traded") or 0.0)
+    return totals
+
+
+def _empty(agent: str, label: str, budget: float, fills: int, notional: float = 0.0) -> SleeveBook:
     return SleeveBook(
         agent=agent,
         label=label,
@@ -98,6 +108,7 @@ def _empty(agent: str, label: str, budget: float, fills: int) -> SleeveBook:
         realized_pnl=None,
         positions=0,
         fills_today=fills,
+        notional_today=notional,
     )
 
 
@@ -113,8 +124,9 @@ def build_books(
     snap = snap if snap is not None else read_snapshot()
     vset = vampire_symbols if vampire_symbols is not None else vampire_universe(snap)
     fills = fills if fills is not None else fills_today_by_agent()
+    notionals = notional_today_by_agent(snap)
 
-    vampires = _empty("vampire", "Vampire scalper", equity * cfg.vampire_pct, fills.get("vampire", 0))
+    vampires = _empty("vampire", "Vampire scalper", equity * cfg.vampire_pct, fills.get("vampire", 0), notionals.get("vampire", 0.0))
     csp = _empty("csp", "Cash-secured puts", equity * cfg.options_pct, fills.get("csp", 0))
     cc = _empty("covered_call", "Covered calls", 0.0, fills.get("covered_call", 0))
     six = _empty("sixfold", "SIXFOLD executor", equity * cfg.sixfold_pct, fills.get("sixfold", 0))
@@ -159,5 +171,6 @@ def build_books(
         realized_pnl=None,
         positions=0,
         fills_today=0,
+        notional_today=0.0,
     )
     return [vampires, csp, cc, six, pendulum, reserve]

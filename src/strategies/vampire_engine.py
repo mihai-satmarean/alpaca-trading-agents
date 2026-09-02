@@ -100,6 +100,7 @@ class VampireEngine:
         self._reject_streak: int = 0
         self._reject_cooldown_until: float = 0.0
         self.last_thought: dict = {}
+        self._order_in_flight: bool = False  # guards against duplicate submissions
 
     @property
     def state(self) -> VampireState:
@@ -501,6 +502,11 @@ class VampireEngine:
 
     def _submit(self, qty: int, price: float, side: OrderSide) -> int:
         """Place an IOC order and return the quantity that actually filled.
+
+        Order-in-flight guard: if a submission is already pending (previous
+        order has not resolved), skip and return 0. This prevents duplicate
+        orders from stacking up when ticks fire before fills arrive -- the
+        defect that let one symbol reach 271 shares against a 21-share cap.
 
         Alpaca returns the order with filled_qty "0" and status "new"; the fill
         lands roughly 85 to 100 milliseconds later. Reading filled_qty off the

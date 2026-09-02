@@ -24,6 +24,7 @@ from src.core.alpaca_client import AlpacaClient, load_config
 from src.core.config import get_config
 from src.core.decision_log import record
 from src.core.agent_status import write_snapshot
+from src.core.operator_commands import drain_pending, mark_applied, snapshot as operator_snapshot
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
@@ -70,6 +71,14 @@ class Coordinator:
         self._options_agent = OptionsIncomeAgent(
             self._client, self._data, self._tracker, self._breaker, self._allocator
         )
+        vcfg = dict(cfg.vampire or {})
+        overrides = {}
+        if cfg.vampire_paused_until:
+            overrides["paused_until"] = cfg.vampire_paused_until
+        if vcfg.get("max_daily_loss") is not None:
+            overrides["max_daily_loss"] = float(vcfg["max_daily_loss"])
+        if vcfg.get("max_trades_per_min") is not None:
+            overrides["max_trades_per_min"] = int(vcfg["max_trades_per_min"])
         self._vampire_agent = VampireAgent(
             self._client,
             self._data,
@@ -77,9 +86,9 @@ class Coordinator:
             self._breaker,
             self._allocator,
             symbols=cfg.vampire_symbols or ["SPY", "QQQ"],
-            config_overrides=({"paused_until": cfg.vampire_paused_until}
-                              if cfg.vampire_paused_until else None),
+            config_overrides=overrides or None,
         )
+        self._skip_sixfold = False
         pend = dict(cfg.pendulum or {})
         self._pendulum_agent = PendulumAgent(
             self._client, self._data, self._tracker, self._breaker, self._allocator,
@@ -259,6 +268,7 @@ class Coordinator:
                     for sym, info in (vampire or {}).items()
                 },
             },
+            "operator": operator_snapshot(),
         }
         try:
             write_snapshot(payload)
@@ -270,9 +280,12 @@ class Coordinator:
             try:
                 if not self._is_market_open():
                     log.debug("Market closed, sleeping")
+                    self._apply_operator_commands()
                     self._publish_snapshot()
                     time.sleep(60)
                     continue
+
+                self._apply_operator_commands()
 
                 heavy_every = (
                     DRY_RUN_INTERVAL if self._client.is_dry_run else REBALANCE_INTERVAL
@@ -281,7 +294,12 @@ class Coordinator:
                 run_heavy = now - self._last_heavy_cycle >= heavy_every
                 if run_heavy:
                     self._last_heavy_cycle = now
-                    if self._sixfold_executor is not None:
+                    if self._skip_sixfold:
+                        self._skip_sixfold = False
+                        record("coordinator", "sixfold_cycle",
+                               thought="operator skipped this cycle",
+                               decision="skipped")
+                    elif self._sixfold_executor is not None:
                         try:
                             result = self._sixfold_executor.run_cycle()
                             orders = result.get("orders") or []
@@ -353,6 +371,41 @@ class Coordinator:
                 log.exception("Coordination cycle error")
 
             time.sleep(DRY_RUN_INTERVAL)
+
+    def _apply_operator_commands(self) -> None:
+        try:
+            pending = drain_pending()
+        except Exception:
+            log.warning("could not read operator queue", exc_info=True)
+            return
+        for cmd in pending:
+            action = str(cmd.get("action") or "")
+            try:
+                if action == "pause_vampire":
+                    self._vampire_agent.halt()
+                    mark_applied(cmd, result="vampire halted")
+                elif action == "resume_vampire":
+                    self._vampire_agent.unhalt()
+                    mark_applied(cmd, result="vampire resumed")
+                elif action == "force_hunt":
+                    self._vampire_agent.request_hunt()
+                    mark_applied(cmd, result="hunt requested; waiting for council")
+                elif action == "skip_sixfold":
+                    self._skip_sixfold = True
+                    mark_applied(cmd, result="next SIXFOLD cycle skipped")
+                elif action == "skip_options":
+                    self._options_agent.skip_next_cycle = True
+                    mark_applied(cmd, result="next options cycle skipped")
+                else:
+                    mark_applied(cmd, result=f"unknown action {action}", ok=False)
+                record(
+                    "coordinator", "operator",
+                    thought=action,
+                    decision=cmd.get("id") or "",
+                )
+            except Exception as exc:
+                log.exception("operator command %s failed", action)
+                mark_applied(cmd, result=str(exc), ok=False)
 
     def stop(self):
         log.info("=== Shutting down trading system ===")

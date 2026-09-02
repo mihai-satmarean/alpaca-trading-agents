@@ -64,6 +64,8 @@ class MarketDataService:
         self._data = client.data
         self._stream = client.stream
         self._vwaps: dict[str, VWAPTracker] = {}
+        self._on_quote = None
+        self._quote_symbols: set[str] = set()
 
     def get_latest_quote(self, symbol: str) -> Quote | None:
         req = StockLatestQuoteRequest(symbol_or_symbols=symbol)
@@ -107,6 +109,8 @@ class MarketDataService:
         on_quote: Callable,
     ):
         """Subscribe to real-time quote updates via WebSocket."""
+        self._on_quote = on_quote
+        self._quote_symbols.update(symbols)
         for sym in symbols:
             if sym not in self._vwaps:
                 self._vwaps[sym] = VWAPTracker(window_seconds=5)
@@ -128,6 +132,13 @@ class MarketDataService:
             await on_quote(quote)
 
         self._stream.subscribe_quotes(_handler, *symbols)
+
+    async def extend_quotes(self, symbols: list[str]) -> None:
+        """Add symbols to an already-running quote stream."""
+        new = [s for s in symbols if s not in self._quote_symbols]
+        if not new or self._on_quote is None:
+            return
+        await self.subscribe_quotes(new, self._on_quote)
 
     async def subscribe_trades(
         self,

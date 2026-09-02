@@ -226,8 +226,8 @@ vampire:
   max_position: 100
   bleed_window_seconds: 5
   reference_type: vwap
-  max_daily_loss: 50.0
-  max_trades_per_min: 20
+  max_daily_loss: 200.0
+  max_trades_per_min: 30
 
 options:
   # Priced for a $20,000 sleeve. The previous list was untradeable here: at

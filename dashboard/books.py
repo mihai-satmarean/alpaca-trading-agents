@@ -15,6 +15,7 @@ def render_sleeve_books(client) -> None:
     st.caption(
         "Budget is the configured sleeve. Invested is capital actually tied up "
         "(CSP collateral = strike × 100 × contracts, not the option mark). "
+        "Turnover is dollars the agent put through the market today. "
         "P&L is broker unrealized. Vampire realized comes from the engine snapshot."
     )
     account = client.get_account()
@@ -30,6 +31,8 @@ def render_sleeve_books(client) -> None:
             "Budget": b.budget,
             "Invested": b.invested,
             "Free": max(0.0, b.budget - b.invested) if b.budget else 0.0,
+            "In play %": (b.invested / b.budget * 100) if b.budget else 0.0,
+            "Turnover": b.notional_today,
             "Unrealized P&L": b.unrealized_pnl,
             "Realized P&L": b.realized_pnl if b.realized_pnl is not None else "",
             "Positions": b.positions,
@@ -44,6 +47,8 @@ def render_sleeve_books(client) -> None:
             "Budget": st.column_config.NumberColumn(format="$%.0f"),
             "Invested": st.column_config.NumberColumn(format="$%.0f"),
             "Free": st.column_config.NumberColumn(format="$%.0f"),
+            "In play %": st.column_config.NumberColumn(format="%.0f%%"),
+            "Turnover": st.column_config.NumberColumn(format="$%.0f"),
             "Unrealized P&L": st.column_config.NumberColumn(format="$%.2f"),
         },
     )

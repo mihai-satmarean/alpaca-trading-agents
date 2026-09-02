@@ -27,22 +27,34 @@ from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.hunt_memory import remembered_winners, score_adjustment
 from src.core.market_data import MarketDataService
 
 log = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 
-UNIVERSE = frozenset([
+# Apex = liquid "big game". Mice = listed NMS names cheap enough that a
+# few hundred dollars buys a lot of shares. Alpaca does not trade OTC and
+# rejects buy orders under $1 notional, so these are not pink-sheet pennies.
+APEX_UNIVERSE = frozenset([
     "QQQ", "IWM", "DIA",
-    "TQQQ", "SQQQ",
+    "TQQQ", "SQQQ", "QLD", "PSQ",
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
-    "AMD", "INTC", "CRM", "ORCL",
-    "JPM", "BAC", "GS",
+    "AMD", "CRM", "ORCL",
+    "JPM", "GS",
     "XLK", "XLF", "XLE", "XLV", "XLI",
-    "NFLX", "PYPL", "UBER", "SQ", "COIN",
-    "RIVN", "SOFI",
+    "NFLX", "UBER", "COIN",
 ])
+
+MICE_UNIVERSE = frozenset([
+    "SOFI", "F", "NIO", "RIVN", "MARA", "AAL", "SNAP", "T",
+    "WBD", "NU", "PFE", "INTC", "OPEN", "RIOT", "CLSK", "PLUG",
+    "HBAN", "KEY", "SLV", "BITO", "GDX", "NCLH", "DAL", "UAL",
+    "GOLD", "BAC",
+])
+
+UNIVERSE = APEX_UNIVERSE | MICE_UNIVERSE
 
 # Measured 2026-09-01 on both contest and staging books: HOOD and SPY lost
 # money as scalper names (contest HOOD -$568 / 2,740 fills; staging HOOD
@@ -62,6 +74,7 @@ class SymbolMetrics:
     gap_pct: float = 0.0
     shortable: bool = True
     score: float = float("inf")
+    tier: str = "apex"
 
 
 @dataclass
@@ -108,14 +121,20 @@ class BleedBudget:
 
 @dataclass
 class PickerConfig:
-    target_count: int = 4
+    target_count: int = 10
+    apex_count: int = 3
+    mice_count: int = 7
     weight_atr: float = 0.40
     weight_spread: float = 0.25
     weight_volume: float = 0.15
     weight_gap: float = 0.10
     min_price: float = 5.0
     max_spread_pct: float = 0.01
+    mice_min_price: float = 1.0
+    mice_max_price: float = 15.0
+    mice_max_spread_pct: float = 0.015
     min_pre_market_volume: int = 500
+    apex_sleeve_pct: float = 0.55
     profit_target_per_symbol: float = 50.0
     loss_limit_per_symbol: float = 25.0
     retirement_cooldown_minutes: int = 30
@@ -160,10 +179,15 @@ class VampireSymbolPicker:
         self._client = client
         self._data = data
         self._sleeve_budget = sleeve_budget
-        self._universe = universe or UNIVERSE
-        self._universe = frozenset(
-            s.upper() for s in self._universe if s.upper() not in HARD_EXCLUDE
-        )
+        if universe is None:
+            self._apex_universe = frozenset(s for s in APEX_UNIVERSE if s not in HARD_EXCLUDE)
+            self._mice_universe = frozenset(s for s in MICE_UNIVERSE if s not in HARD_EXCLUDE)
+        else:
+            self._apex_universe = frozenset(
+                s.upper() for s in universe if s.upper() not in HARD_EXCLUDE
+            )
+            self._mice_universe = frozenset()
+        self._universe = self._apex_universe | self._mice_universe
         self.cfg = config or PickerConfig()
 
         self._all_metrics: dict[str, SymbolMetrics] = {}
@@ -192,12 +216,18 @@ class VampireSymbolPicker:
         """Run the full pre-market scan and return top symbols with budgets."""
         log.info("VampireSymbolPicker: scanning %d candidates", len(self._universe))
 
-        raw = self._collect_metrics(self._universe)
-        passed = self._apply_hard_filters(raw)
-        scored = self._score_all(passed)
-        ranked = sorted(scored, key=lambda m: m.score)
-        selected = self._hunt_filter(ranked, self.cfg.target_count,
-                                     keep_symbols=keep_symbols)
+        keep = set(s.upper() for s in (keep_symbols or set()))
+        keep |= remembered_winners(exclude=HARD_EXCLUDE)
+
+        if self._mice_universe:
+            selected = self._pick_tiered(keep)
+        else:
+            raw = self._collect_metrics(self._universe)
+            passed = self._apply_hard_filters(raw)
+            scored = self._score_all(passed)
+            ranked = sorted(scored, key=lambda m: m.score)
+            selected = self._hunt_filter(ranked, self.cfg.target_count,
+                                         keep_symbols=keep)
 
         symbols = [m.symbol for m in selected]
         budgets = self._assign_bleed_budgets(selected)
@@ -211,9 +241,32 @@ class VampireSymbolPicker:
 
         return SelectionResult(
             symbols=symbols,
-            metrics={m.symbol: m for m in scored},
+            metrics={m.symbol: m for m in self._all_metrics.values()},
             bleed_budgets=budgets,
         )
+
+    def _pick_tiered(self, keep: set[str]) -> list:
+        apex_raw = self._collect_metrics(self._apex_universe, tier="apex")
+        mice_raw = self._collect_metrics(self._mice_universe, tier="mice")
+        apex = self._score_all(self._apply_hard_filters(apex_raw))
+        mice = self._score_all(self._apply_hard_filters(mice_raw, mice=True))
+        apex_ranked = sorted(apex, key=lambda m: m.score)
+        mice_ranked = sorted(mice, key=lambda m: m.score)
+        apex_sel = self._hunt_filter(
+            apex_ranked, self.cfg.apex_count, keep_symbols=keep,
+        )
+        taken = {m.symbol.upper() for m in apex_sel}
+        mice_keep = {s for s in keep if s not in taken}
+        mice_sel = self._hunt_filter(
+            [m for m in mice_ranked if m.symbol.upper() not in taken],
+            self.cfg.mice_count,
+            keep_symbols=mice_keep,
+        )
+        if len(apex_sel) < self.cfg.apex_count:
+            need = self.cfg.apex_count - len(apex_sel)
+            extra = [m for m in apex_ranked if m.symbol.upper() not in taken][:need]
+            apex_sel = apex_sel + extra
+        return apex_sel + mice_sel
 
     def check_health(
         self, engines: dict,
@@ -369,7 +422,7 @@ class VampireSymbolPicker:
             budget.retire_reason = reason
         log.info("VampireSymbolPicker: retired %s (%s)", symbol, reason)
 
-    def _collect_metrics(self, symbols: frozenset[str]) -> list[SymbolMetrics]:
+    def _collect_metrics(self, symbols: frozenset[str], *, tier: str = "apex") -> list[SymbolMetrics]:
         results: list[SymbolMetrics] = []
 
         for sym in sorted(symbols):
@@ -392,6 +445,7 @@ class VampireSymbolPicker:
                     spread_pct=spread_pct,
                     atr_pct=atr_pct,
                     gap_pct=gap_pct,
+                    tier=tier,
                 )
                 results.append(m)
                 self._all_metrics[sym] = m
@@ -401,14 +455,20 @@ class VampireSymbolPicker:
 
         return results
 
-    def _apply_hard_filters(self, metrics: list[SymbolMetrics]) -> list[SymbolMetrics]:
+    def _apply_hard_filters(
+        self, metrics: list[SymbolMetrics], *, mice: bool = False,
+    ) -> list[SymbolMetrics]:
         passed: list[SymbolMetrics] = []
+        min_price = self.cfg.mice_min_price if mice else self.cfg.min_price
+        max_price = self.cfg.mice_max_price if mice else None
+        max_spread = self.cfg.mice_max_spread_pct if mice else self.cfg.max_spread_pct
 
         for m in metrics:
-            if m.price < self.cfg.min_price:
+            if m.price < min_price:
                 continue
-
-            if m.spread_pct > self.cfg.max_spread_pct:
+            if max_price is not None and m.price > max_price:
+                continue
+            if m.spread_pct > max_spread:
                 continue
 
             try:
@@ -512,6 +572,7 @@ class VampireSymbolPicker:
                 + self.cfg.weight_spread * z_spread
                 + self.cfg.weight_gap * z_gap
             )
+            m.score += score_adjustment(m.symbol)
 
         return metrics
 

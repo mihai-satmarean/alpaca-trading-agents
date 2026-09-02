@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.decision_log import record
+from src.core.hunt_memory import record_session
 from src.core.market_data import MarketDataService, Quote
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationManager
@@ -37,6 +38,12 @@ SPREAD_SAMPLES = 5
 MAX_SPREAD_FRACTION = 0.005
 
 HEALTH_CHECK_INTERVAL = 300
+
+APEX_SLEEVE_PCT = 0.55
+APEX_CLIP_FRAC = 0.40
+APEX_CLIP_CAP = 2_500.0
+MICE_CLIP_FRAC = 0.55
+MICE_CLIP_CAP = 900.0
 
 
 class VampireAgent:
@@ -70,6 +77,8 @@ class VampireAgent:
         self._picker: VampireSymbolPicker | None = None
         self._last_health_check: float = 0.0
         self._last_lineup: list[dict] = []
+        self._halted = False
+        self._hunt_requested = False
 
         if enable_picker:
             budget = allocator.get_budget().vampire_budget
@@ -198,8 +207,11 @@ class VampireAgent:
                          sym, len(spreads) - len(usable), len(spreads))
 
             spread = statistics.median(usable)
+            floor = MIN_TICK_THRESHOLD
+            if price and price < 20:
+                floor = min(MIN_TICK_THRESHOLD, price * 0.003)
             engine.cfg.tick_threshold = round(
-                max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4
+                max(spread * SPREAD_MULTIPLE, floor), 4
             )
             log.info("%s median spread %.3f (%d of %d reads) -> tick_threshold %.4f",
                      sym, spread, len(usable), len(spreads), engine.cfg.tick_threshold)
@@ -218,27 +230,83 @@ class VampireAgent:
         budget = self._allocator.get_budget().vampire_budget
         if not budget or not self._engines:
             return
-        per_symbol = budget / len(self._engines)
+        apex = {
+            s: e for s, e in self._engines.items()
+            if getattr(e.cfg, "tier", "apex") != "mice"
+        }
+        mice = {
+            s: e for s, e in self._engines.items()
+            if getattr(e.cfg, "tier", "apex") == "mice"
+        }
+        if mice:
+            apex_budget = budget * APEX_SLEEVE_PCT
+            mice_budget = budget - apex_budget
+        else:
+            apex_budget, mice_budget = budget, 0.0
+        self._size_group(apex, apex_budget, APEX_CLIP_FRAC, APEX_CLIP_CAP)
+        self._size_group(mice, mice_budget, MICE_CLIP_FRAC, MICE_CLIP_CAP)
 
-        for sym, engine in self._engines.items():
+    def _size_group(
+        self, group: dict, group_budget: float, clip_frac: float, clip_cap: float,
+    ) -> None:
+        if not group:
+            return
+        per_symbol = group_budget / len(group)
+        for sym, engine in group.items():
             engine.cfg.max_notional = per_symbol
             try:
                 quote = self._data.get_latest_quote(sym)
                 price = quote.mid if quote else None
             except Exception:
                 price = None
+            clip = min(per_symbol * clip_frac, clip_cap) if per_symbol else 0.0
+            engine.cfg.clip_notional = clip
             if price and price > 0:
                 shares = int(per_symbol // price)
-                engine.cfg.max_position = max(0, min(engine.cfg.max_position, shares))
+                clip_shares = max(1, int(clip // price)) if clip else 1
+                engine.cfg.max_position = max(0, shares)
                 engine.cfg.position_size = max(
-                    1, min(engine.cfg.position_size, engine.cfg.max_position or 1)
+                    1, min(clip_shares, engine.cfg.max_position or 1)
                 )
             log.info(
-                "%s sleeve cap $%.0f -> max_position %d, position_size %d",
-                sym, per_symbol, engine.cfg.max_position, engine.cfg.position_size,
+                "%s %s cap $%.0f clip $%.0f -> max_position %d, position_size %d",
+                sym, getattr(engine.cfg, "tier", "apex"),
+                per_symbol, clip, engine.cfg.max_position, engine.cfg.position_size,
             )
 
-    def run_pre_market_scan(self) -> list[str]:
+    def _make_engine(self, sym: str, *, tier: str = "apex") -> VampireEngine:
+        cfg = VampireConfig(symbol=sym, tier=tier, **self._overrides)
+        cfg.halted = self._halted
+        return VampireEngine(self._client, self._data, self._tracker, cfg)
+
+    def halt(self, *, flatten: bool = True) -> None:
+        self._halted = True
+        for engine in self._engines.values():
+            engine.cfg.halted = True
+            if flatten:
+                try:
+                    engine._flatten_all("operator_pause")
+                except Exception:
+                    log.exception("flatten failed while pausing %s", engine.cfg.symbol)
+
+    def unhalt(self) -> None:
+        self._halted = False
+        for engine in self._engines.values():
+            engine.cfg.halted = False
+            engine.cfg.paused_until = None
+
+    def request_hunt(self) -> None:
+        self._hunt_requested = True
+
+    def remember_session(self) -> None:
+        pnl = {s: e.daily_pnl for s, e in self._engines.items()}
+        fills = {s: len(e.bleeds) for s, e in self._engines.items()}
+        try:
+            record_session(pnl, fills, exclude=HARD_EXCLUDE)
+        except Exception:
+            log.warning("could not persist vampire memory", exc_info=True)
+
+    def run_pre_market_scan(self, *, council: bool = False) -> list[str]:
         """Use the VampireSymbolPicker to select symbols before the open.
 
         Replaces the static list with data-driven selection.  If the picker
@@ -263,6 +331,22 @@ class VampireAgent:
         except Exception:
             log.exception("Pre-market scan failed; keeping current symbols")
             return list(self._engines.keys())
+
+        if council and result.symbols:
+            from src.core.finance_advisor import evaluate_hunt_lineup
+            decision = evaluate_hunt_lineup(result.symbols)
+            if not decision.approved:
+                log.info(
+                    "Council rejected hunt lineup %s (%s); keeping %s",
+                    result.symbols, decision.summary, list(self._engines.keys()),
+                )
+                record(
+                    "vampire_picker", "lineup",
+                    thought=decision.summary,
+                    decision="council_reject",
+                    symbols=result.symbols,
+                )
+                return list(self._engines.keys())
 
         if not result.symbols:
             log.warning("Picker returned no symbols; keeping current list")
@@ -296,11 +380,10 @@ class VampireAgent:
                     log.exception("Failed to flatten %s during rotation", sym)
 
         for sym in new - old:
-            cfg = VampireConfig(symbol=sym, **self._overrides)
-            self._engines[sym] = VampireEngine(
-                self._client, self._data, self._tracker, cfg,
-            )
-            log.info("Added victim %s from pre-market scan", sym)
+            metrics = result.metrics.get(sym)
+            tier = getattr(metrics, "tier", "apex") if metrics is not None else "apex"
+            self._engines[sym] = self._make_engine(sym, tier=tier)
+            log.info("Added victim %s (%s) from pre-market scan", sym, tier)
 
         self._symbols = list(self._engines.keys())
         log.info("Post-scan lineup: %s", self._symbols)
@@ -362,8 +445,9 @@ class VampireAgent:
             replacements = self._picker.find_replacements(current, count=len(retirements))
 
             for sym in replacements:
-                cfg = VampireConfig(symbol=sym, **self._overrides)
-                engine = VampireEngine(self._client, self._data, self._tracker, cfg)
+                metrics = (self._picker._all_metrics or {}).get(sym)
+                tier = getattr(metrics, "tier", "apex") if metrics is not None else "apex"
+                engine = self._make_engine(sym, tier=tier)
                 self._engines[sym] = engine
 
                 await self._calibrate_single(sym, engine)
@@ -408,8 +492,30 @@ class VampireAgent:
         if not usable:
             return
         spread = statistics.median(usable)
-        engine.cfg.tick_threshold = round(max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4)
+        floor = MIN_TICK_THRESHOLD
+        if price and price < 20:
+            floor = min(MIN_TICK_THRESHOLD, price * 0.003)
+        engine.cfg.tick_threshold = round(max(spread * SPREAD_MULTIPLE, floor), 4)
         log.info("%s calibrated: spread %.3f -> threshold %.4f", sym, spread, engine.cfg.tick_threshold)
+
+    async def _run_forced_hunt(self) -> None:
+        """UI/operator hunt: quantitative pick, then full council, then rotate."""
+        before = set(self._engines.keys())
+        self.run_pre_market_scan(council=True)
+        self._apply_sleeve_limits()
+        self._drop_unshortable()
+        await self._apply_spread_thresholds()
+        added = [s for s in self._engines if s not in before]
+        if added:
+            try:
+                await self._data.extend_quotes(added)
+            except Exception:
+                log.warning("could not subscribe new hunt symbols %s", added, exc_info=True)
+        record(
+            "vampire_picker", "force_hunt",
+            thought=f"lineup {list(self._engines.keys())}",
+            decision="applied",
+        )
 
     def activity_summary(self) -> list[dict]:
         """Per-symbol view of what the scalper actually did.
@@ -424,9 +530,11 @@ class VampireAgent:
             try:
                 rows.append({
                     "symbol": sym,
+                    "tier": getattr(engine.cfg, "tier", "apex"),
                     "trades": len(engine.bleeds),
                     "net_position": engine.net_position,
                     "realized_pnl": round(engine.daily_pnl, 2),
+                    "notional": round(getattr(engine, "notional_traded", 0.0), 2),
                     "state": engine.state.value,
                 })
             except Exception:
@@ -444,6 +552,12 @@ class VampireAgent:
                 "daily_pnl": engine.daily_pnl,
                 "bleed_count": len(engine.bleeds),
                 "threshold": engine.cfg.tick_threshold,
+                "tier": getattr(engine.cfg, "tier", "apex"),
+                "max_notional": engine.cfg.max_notional,
+                "clip_notional": getattr(engine.cfg, "clip_notional", None),
+                "position_size": engine.cfg.position_size,
+                "notional_traded": getattr(engine, "notional_traded", 0.0),
+                "halted": bool(getattr(engine.cfg, "halted", False) or self._halted),
                 "last_thought": getattr(engine, "last_thought", {}),
             }
         return status
@@ -453,6 +567,8 @@ class VampireAgent:
         return {
             "enabled": self._picker is not None,
             "llm_hunt": bool(self._picker and self._picker.cfg.llm_hunt),
+            "halted": self._halted,
+            "hunt_requested": self._hunt_requested,
             "symbols": list(self._engines.keys()),
             "lineup": list(self._last_lineup),
             "hunts": hunts,
@@ -484,15 +600,19 @@ class VampireAgent:
             engine = self._engines.get(quote.symbol)
             if engine:
                 vwap = self._data.get_vwap(quote.symbol, engine.cfg.bleed_window_seconds)
-                engine.tick(quote.mid, vwap)
+                await engine.tick(quote.mid, vwap)
 
             await self.check_and_rotate()
+            if self._hunt_requested:
+                self._hunt_requested = False
+                await self._run_forced_hunt()
 
         await self._data.subscribe_quotes(all_symbols, on_quote)
         await self._data.subscribe_trades(all_symbols, lambda _: asyncio.sleep(0))
         await self._data.run_stream()
 
     def stop_all(self):
+        self.remember_session()
         for sym, engine in self._engines.items():
             engine._flatten_all("agent_stop")
             engine._state = VampireState.STOPPED

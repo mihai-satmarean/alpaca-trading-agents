@@ -52,6 +52,7 @@ class OptionsIncomeAgent:
 
         self._mcp: AlpacaMCPClient | None = None
         self.last_cycle: dict = {}          # read by the reporter for narration
+        self.skip_next_cycle = False
         self._csp = CashSecuredPutStrategy(
             self._alpaca, self._chain, data, tracker,
             allocator=allocator, breaker=breaker,
@@ -92,6 +93,11 @@ class OptionsIncomeAgent:
 
     def run_cycle(self) -> dict:
         """Execute one scan-and-trade cycle. Returns summary of actions taken."""
+        if self.skip_next_cycle:
+            self.skip_next_cycle = False
+            record("options", "cycle", thought="operator skipped this cycle",
+                   decision="skipped")
+            return {"status": "skipped"}
         if not self._breaker.check():
             log.warning("Circuit breaker active, skipping options cycle")
             record("options", "cycle", thought=self._breaker.trip_reason or "breaker",

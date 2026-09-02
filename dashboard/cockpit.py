@@ -83,9 +83,13 @@ def _snapshot_extra(key: str, snap: dict):
             last = info.get("last_thought") or {}
             rows.append({
                 "Symbol": sym,
+                "Tier": info.get("tier"),
                 "State": info.get("state"),
                 "Pos": info.get("net_position"),
                 "P&L": info.get("daily_pnl"),
+                "Clip": info.get("clip_notional"),
+                "Cap": info.get("max_notional"),
+                "Turnover": info.get("notional_traded"),
                 "Need": info.get("threshold"),
                 "Thought": last.get("decision") or last.get("thought") or "",
             })
@@ -171,17 +175,53 @@ def _snapshot_extra(key: str, snap: dict):
             st.caption("Observer heartbeats appear here once dry-run is up.")
 
 
-def render_operator_future() -> None:
+def render_operator_controls() -> None:
+    from src.core.operator_commands import enqueue, snapshot
+
     st.subheader("Operator controls")
     st.caption(
-        "Future version. Buttons are visible so the layout is honest, "
-        "and disabled so this process cannot trade."
+        "Buttons write a command file. The coordinator applies them. "
+        "This dashboard never submits orders. Force hunt goes through the "
+        "picker and the four-model council, and waits for thinking models."
+    )
+    snap = read_snapshot()
+    picker = snap.get("vampire_picker") or {}
+    halted = bool(picker.get("halted"))
+    st.caption(
+        f"vampire={'paused' if halted else 'live'} · "
+        f"hunt_requested={picker.get('hunt_requested')} · "
+        f"victims={', '.join(picker.get('symbols') or []) or '(none)'}"
     )
     a, b, c, d = st.columns(4)
-    a.button("Pause Vampire", disabled=True)
-    b.button("Skip SIXFOLD cycle", disabled=True)
-    c.button("Skip options cycle", disabled=True)
-    d.button("Flatten intraday", disabled=True)
+    if a.button("Pause Vampire"):
+        enqueue("pause_vampire", note="cockpit")
+        st.success("Pause queued")
+    if b.button("Resume Vampire"):
+        enqueue("resume_vampire", note="cockpit")
+        st.success("Resume queued")
+    if c.button("Force hunt"):
+        enqueue("force_hunt", note="cockpit")
+        st.success("Hunt queued — council will vote, including thinking models")
+    if d.button("Skip SIXFOLD cycle"):
+        enqueue("skip_sixfold", note="cockpit")
+        st.success("Skip SIXFOLD queued")
+    e, f = st.columns(2)
+    if e.button("Skip options cycle"):
+        enqueue("skip_options", note="cockpit")
+        st.success("Skip options queued")
+    queue = snapshot()
+    pending = queue.get("pending") or []
+    applied = queue.get("applied") or []
+    if pending:
+        st.caption("Pending")
+        st.dataframe(pd.DataFrame(pending), use_container_width=True, hide_index=True)
+    if applied:
+        st.caption("Recently applied")
+        st.dataframe(pd.DataFrame(applied), use_container_width=True, hide_index=True)
+
+
+def render_operator_future() -> None:
+    render_operator_controls()
 
 
 @st.fragment(run_every=2)

@@ -203,35 +203,48 @@ def _llm_call(model: str, system: str, user: str,
     if thinks:
         max_tokens = max(
             max_tokens,
-            int(os.environ.get("COUNCIL_THINKING_MAX_TOKENS", "4000")),
+            int(os.environ.get("COUNCIL_THINKING_MAX_TOKENS", "8000")),
         )
-        timeout = float(os.environ.get("COUNCIL_THINKING_TIMEOUT",
-                                       os.environ.get("COUNCIL_TIMEOUT", "60")))
+        timeout = float(os.environ.get("COUNCIL_THINKING_TIMEOUT", "120"))
     else:
         timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
 
-    body = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "max_tokens": max_tokens,
-        "temperature": temperature,
-        "chat_template_kwargs": {"enable_thinking": thinks},
-    }).encode()
+    last_text = ""
+    tokens = max_tokens
+    attempts = 2 if thinks else 1
+    for attempt in range(attempts):
+        body = json.dumps({
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": tokens,
+            "temperature": temperature,
+            "chat_template_kwargs": {"enable_thinking": thinks},
+        }).encode()
 
-    req = urllib.request.Request(
-        f"{base}/chat/completions", data=body,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
-        payload = json.load(r)
-    message = ((payload.get("choices") or [{}])[0].get("message") or {})
-    text = _extract_message_text(message)
-    if not text:
+        req = urllib.request.Request(
+            f"{base}/chat/completions", data=body,
+            headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
+            payload = json.load(r)
+        choice = (payload.get("choices") or [{}])[0]
+        finish = str(choice.get("finish_reason") or "")
+        message = choice.get("message") or {}
+        last_text = _extract_message_text(message)
+        vote = _trailing_vote_line(_answer_for_verdict(last_text))
+        if last_text and (vote or finish != "length" or not thinks or attempt + 1 == attempts):
+            break
+        tokens = int(tokens * 1.5)
+        log.warning(
+            "%s still thinking (finish=%s, attempt %d); waiting for a complete vote",
+            model, finish, attempt + 1,
+        )
+    if not last_text:
         raise ValueError(f"{model} returned empty content")
-    return text
+    return last_text
 
 
 _APPROVE_NEGATIONS = ("NOT APPROVE", "N'T APPROVE", "CANNOT APPROVE",
@@ -295,10 +308,9 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
     # two must not disagree: a wall shorter than the per-request timeout
     # cancels advisors that were about to answer and records them as
     # abstentions, which is the same silent-vote failure this file just fixed.
-    think_to = float(os.environ.get("COUNCIL_THINKING_TIMEOUT",
-                                    os.environ.get("COUNCIL_TIMEOUT", "60")))
+    think_to = float(os.environ.get("COUNCIL_THINKING_TIMEOUT", "120"))
     base_to = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
-    wall_timeout = max(base_to, think_to) + 10
+    wall_timeout = max(base_to, think_to) + 20
 
     with ThreadPoolExecutor(max_workers=len(COUNCIL_MODELS)) as pool:
         futures = {}
@@ -443,6 +455,42 @@ def evaluate_csp(symbol: str, strike: float, dte: int,
     if extra_context:
         prompt += f"\nAdditional context: {extra_context}\n"
     return _run_council("sell_put", symbol, _CSP_PROMPTS, prompt)
+
+
+_HUNT_LINEUP_PROMPTS = {
+    "Finance Specialist": (
+        "You are choosing a bi-directional micro-scalper lineup. "
+        "Apex names are liquid ETFs/megacaps. Mice are listed NMS names "
+        "between $1 and $15, not OTC. "
+        "Start with APPROVE or REJECT, then two sentences."
+    ),
+    "Financial Reasoner": (
+        "You are a financial reasoner reviewing a vampire hunt. "
+        "Think if you need to. After any thinking, the visible answer must "
+        "start with APPROVE or REJECT. Approve only if the mix is shortable, "
+        "two-sided, and not a gap-and-go bet."
+    ),
+    "General Strategist": (
+        "You are a portfolio strategist. APPROVE or REJECT this scalper hunt. "
+        "Prefer more names with smaller clips over one oversized victim."
+    ),
+    "Risk Analyst": (
+        "You are a risk analyst. REJECT if HOOD/SPY sneak back, if names look "
+        "OTC, or if the book is too concentrated. Otherwise APPROVE."
+    ),
+}
+
+
+def evaluate_hunt_lineup(symbols: list[str]) -> CouncilDecision:
+    """Four-model vote on a proposed vampire hunt. Waits for thinking models."""
+    names = [str(s).upper() for s in symbols if s]
+    prompt = (
+        "Proposed vampire scalper lineup (apex + listed mice, not OTC):\n"
+        + ", ".join(names)
+        + "\nAPPROVE to hunt these names now. REJECT to keep the current book."
+    )
+    return _run_council("hunt_lineup", ",".join(names) or "NONE",
+                        _HUNT_LINEUP_PROMPTS, prompt)
 
 
 # ---------------------------------------------------------------------------

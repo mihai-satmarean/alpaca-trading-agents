@@ -67,8 +67,7 @@ class Coordinator:
             self._breaker,
             self._allocator,
             symbols=cfg.vampire_symbols or ["SPY", "QQQ"],
-            config_overrides=({"paused_until": cfg.vampire_paused_until}
-                              if cfg.vampire_paused_until else None),
+            config_overrides=cfg.vampire_engine_overrides or None,
         )
         pend = dict(cfg.pendulum or {})
         self._pendulum_agent = PendulumAgent(
@@ -95,13 +94,16 @@ class Coordinator:
             self._client, self._tracker, self._breaker, self._allocator
         )
 
+        # Universe and bands come from strategies.yml. A hardcoded list here
+        # outranked the file for two days: it carried SPY and QQQ, which score
+        # zero (no income statement), and omitted KO and PEP, which were in the
+        # config and never scored once.
         self._sixfold_agent = SixfoldAnalystAgent(
             self._client,
-            universe=[
-                "SPY", "QQQ", "AAPL", "MSFT", "GOOGL", "AMZN",
-                "NVDA", "META", "JPM", "V", "JNJ", "UNH",
-                "PG", "HD", "COST", "ABBV", "LLY", "MRK",
-            ],
+            universe=cfg.sixfold_universe or None,
+            buy_threshold=cfg.sixfold_buy_threshold,
+            hold_threshold=cfg.sixfold_hold_threshold,
+            dispose_threshold=cfg.sixfold_dispose_threshold,
         )
 
         # SIXFOLD's analyst scores names and places no orders; this is what
@@ -114,6 +116,7 @@ class Coordinator:
                 self._client, self._data, self._tracker, self._breaker,
                 self._allocator, analyst,
                 excluded=set(cfg.vampire_symbols or []) | {cfg.pendulum_symbol},
+                max_concurrent=cfg.sixfold_max_concurrent,
             )
 
         self._running = False

@@ -146,8 +146,10 @@ class TestTheConfigIsWiredToTheEngine:
                 # Construction touches the broker; only the call matters here.
                 pass
         assert VA.called, "the coordinator never built a VampireAgent"
-        overrides = VA.call_args.kwargs.get("config_overrides")
-        assert overrides == {"paused_until": "2026-09-02"}, (
+        overrides = VA.call_args.kwargs.get("config_overrides") or {}
+        # A subset check: since 2026-09-02 the coordinator forwards every
+        # vampire key in the yml, not only the pause, so the dict is larger.
+        assert overrides.get("paused_until") == "2026-09-02", (
             f"the coordinator passed {overrides!r}; the halt in strategies.yml "
             "would never reach the engine"
         )

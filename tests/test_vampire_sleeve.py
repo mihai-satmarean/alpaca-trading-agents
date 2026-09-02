@@ -163,7 +163,11 @@ class TestZeroAllocationStopsIt:
         """
         from src.core.config import load_config
         cfg = load_config()
-        assert cfg.vampire_pct == 0.15
+        if cfg.vampire_pct == 0.0:
+            # Retired 2026-09-02 on measured expectancy. A zero sleeve must
+            # mean the agent does not start (covered above), not that it
+            # trades a tiny number; the per-symbol floor is moot.
+            return
         per_symbol = 100_000 * cfg.vampire_pct / max(len(cfg.vampire_symbols), 1)
         assert per_symbol >= 2_000, (
             f"${per_symbol:,.0f} per symbol is too thin to trade the priciest name"

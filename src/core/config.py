@@ -75,6 +75,41 @@ class StrategyConfig:
         return str(v) if v else None
 
     @property
+    def sixfold_universe(self) -> list[str]:
+        return [str(x).upper() for x in (self.sixfold.get("universe") or [])]
+
+    @property
+    def sixfold_buy_threshold(self) -> float:
+        return float(self.sixfold.get("buy_threshold", 65.0))
+
+    @property
+    def sixfold_hold_threshold(self) -> float:
+        return float(self.sixfold.get("hold_threshold", 50.0))
+
+    @property
+    def sixfold_dispose_threshold(self) -> float:
+        return float(self.sixfold.get("dispose_threshold", 40.0))
+
+    @property
+    def sixfold_max_concurrent(self) -> int:
+        return int(self.sixfold.get("max_concurrent", 10))
+
+    @property
+    def vampire_engine_overrides(self) -> dict[str, Any]:
+        """The yml keys VampireConfig accepts, so the file is the truth.
+
+        The coordinator passed only paused_until through, and every other key
+        in the vampire block was silently ignored in favour of dataclass
+        defaults that happened to match. Same class as the Pendulum loader bug.
+        """
+        keys = ("tick_threshold", "position_size", "max_position",
+                "bleed_window_seconds", "max_daily_loss", "max_trades_per_min")
+        out = {k: self.vampire[k] for k in keys if k in self.vampire}
+        if self.vampire_paused_until:
+            out["paused_until"] = self.vampire_paused_until
+        return out
+
+    @property
     def csp(self) -> dict[str, Any]:
         return dict(self.options.get("csp", {}))
 

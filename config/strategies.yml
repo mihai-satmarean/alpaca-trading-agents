@@ -43,11 +43,11 @@
 # get there; the scalper is halted and the CSP sleeve was already inside its
 # new number.
 allocation:
-  sixfold_pct: 0.0      # was 0.45, changed by AI Council 2026-09-02 17:24 UTC
-  options_pct: 0.8      # was 0.15
-  vampire_pct: 0.15      # was 0.15
-  pendulum_pct: 0.0      # was 0.15
-  reserve_pct: 0.05      # minimum 5%
+  sixfold_pct: 0.0      # was 0.0, changed by AI Council 2026-09-02 17:51 UTC
+  options_pct: 0.33      # was 0.33
+  vampire_pct: 0.54      # was 0.54
+  pendulum_pct: 0.0      # was 0.0
+  reserve_pct: 0.13      # minimum 5%
 
 # Pendulum -- mean reversion on long-duration Treasuries, Tashi's spec v1.1.
 #

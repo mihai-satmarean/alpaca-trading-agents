@@ -7,11 +7,12 @@ and renders a reverse-chronological feed. Read-only: never publishes.
 from __future__ import annotations
 
 import json
+from html import escape as _html_escape
 import logging
 import os
 import ssl
 from datetime import datetime, timezone
-from typing import Any
+from urllib.parse import quote as _url_quote
 
 import streamlit as st
 
@@ -32,21 +33,38 @@ PRIORITY_COLOR = {
     5: "#ef4444",  # red
 }
 
+# Fallback only; prefer setting NTFY_TOPIC env var to avoid leaking identifiers.
 DEFAULT_TOPIC = "frank-trading-a0372d5e65"
 NTFY_BASE = "https://ntfy.sh"
 
+_MAX_MESSAGES = 500
+
 
 def _resolve_topic() -> str:
+    """Return the ntfy topic from NTFY_TOPIC env var, falling back to DEFAULT_TOPIC."""
     return os.environ.get("NTFY_TOPIC", DEFAULT_TOPIC)
 
 
 def _poll_messages(topic: str, since: str = "2h", limit: int = 100) -> list[dict]:
-    """Poll ntfy.sh for cached messages. Returns list of message dicts."""
+    """Poll ntfy.sh for cached messages via the JSON polling endpoint.
+
+    Args:
+        topic: The ntfy topic name to poll.
+        since: Time window for cached messages (e.g. "2h", "30m").
+        limit: Maximum number of messages to return, newest first.
+
+    Returns:
+        List of message dicts sorted by timestamp descending, capped at *limit*.
+        Returns an empty list on any network or parsing error.
+    """
     import urllib.request
 
-    url = f"{NTFY_BASE}/{topic}/json?poll=1&since={since}"
+    safe_topic = _url_quote(topic, safe="")
+    safe_since = _url_quote(since, safe="")
+    url = f"{NTFY_BASE}/{safe_topic}/json?poll=1&since={safe_since}"
     try:
         req = urllib.request.Request(url)
+        req.add_header("User-Agent", "pa-dashboard/1.0")
         with urllib.request.urlopen(req, timeout=8, context=_SSL_CTX) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except Exception:
@@ -71,6 +89,10 @@ def _poll_messages(topic: str, since: str = "2h", limit: int = 100) -> list[dict
 
 
 def _format_time(unix_ts: int) -> str:
+    """Convert a Unix timestamp to ``HH:MM:SS UTC`` display string.
+
+    Returns the raw timestamp as a string if conversion fails.
+    """
     try:
         dt = datetime.fromtimestamp(unix_ts, tz=timezone.utc)
         return dt.strftime("%H:%M:%S UTC")
@@ -79,16 +101,20 @@ def _format_time(unix_ts: int) -> str:
 
 
 def _render_message_card(msg: dict) -> None:
-    """Render a single notification as a styled card."""
+    """Render a single notification as a styled HTML card via ``st.markdown``.
+
+    All user-controlled fields (title, body, tags) are HTML-escaped before
+    injection into the ``unsafe_allow_html`` block.
+    """
     priority = msg.get("priority", 3)
     color = PRIORITY_COLOR.get(priority, "#a3a3a3")
     label = PRIORITY_LABEL.get(priority, "default")
-    title = msg.get("title") or "(no title)"
-    body = msg.get("message") or ""
+    title = _html_escape(msg.get("title") or "(no title)")
+    body = _html_escape(msg.get("message") or "")
     tags = msg.get("tags") or []
     ts = _format_time(msg.get("time", 0))
 
-    tag_str = " ".join(f"`{t}`" for t in tags) if tags else ""
+    tag_str = " ".join(f"`{_html_escape(str(t))}`" for t in tags) if tags else ""
 
     st.markdown(
         f"<div style='"
@@ -112,22 +138,36 @@ def _render_message_card(msg: dict) -> None:
 
 @st.fragment(run_every=15)
 def _auto_poll_fragment(since: str = "2h") -> None:
-    """Fragment that auto-refreshes. Stores results in session_state."""
+    """Streamlit fragment that auto-refreshes every 15 seconds.
+
+    Polls the configured ntfy topic, stores the result list in
+    ``st.session_state`` (replacing the previous batch to prevent unbounded
+    growth), and records the poll timestamp.
+    """
     topic = _resolve_topic()
     messages = _poll_messages(topic, since=since)
-    st.session_state["_ntfy_messages"] = messages
+    st.session_state["_ntfy_messages"] = messages[:_MAX_MESSAGES]
     st.session_state["_ntfy_last_poll"] = datetime.now(timezone.utc).strftime("%H:%M:%S UTC")
     st.session_state["_ntfy_topic"] = topic
 
 
 def render_notifications(since: str = "2h") -> None:
-    """Notification feed with auto-refresh and manual refresh button."""
-    # The fragment runs every 15s and updates session_state
+    """Render the notification feed with auto-refresh and a manual refresh button.
+
+    This is the public entry point called from the dashboard's Notifications
+    tab.  It delegates polling to ``_auto_poll_fragment`` (runs every 15 s)
+    and renders a reverse-chronological card list of engine notifications.
+
+    Args:
+        since: How far back to look for cached messages (default ``"2h"``).
+    """
     _auto_poll_fragment(since=since)
 
     topic = st.session_state.get("_ntfy_topic", _resolve_topic())
     last_poll = st.session_state.get("_ntfy_last_poll", "never")
     messages = st.session_state.get("_ntfy_messages", [])
+
+    safe_topic_url = _html_escape(_url_quote(topic, safe=""))
 
     col_title, col_poll, col_btn, col_link = st.columns([2, 1, 1, 1])
     with col_title:
@@ -137,14 +177,15 @@ def render_notifications(since: str = "2h") -> None:
     with col_btn:
         if st.button("Refresh now", key="ntfy_refresh", use_container_width=True):
             fresh = _poll_messages(topic, since=since)
-            st.session_state["_ntfy_messages"] = fresh
+            st.session_state["_ntfy_messages"] = fresh[:_MAX_MESSAGES]
             st.session_state["_ntfy_last_poll"] = datetime.now(
                 timezone.utc
             ).strftime("%H:%M:%S UTC")
             messages = fresh
     with col_link:
         st.markdown(
-            f"<a href='{NTFY_BASE}/{topic}' target='_blank' "
+            f"<a href='{NTFY_BASE}/{safe_topic_url}' target='_blank' "
+            f"rel='noopener noreferrer' "
             f"style='font-size:0.8rem;'>Open in ntfy</a>",
             unsafe_allow_html=True,
         )

@@ -17,6 +17,7 @@ import os
 import shutil
 import ssl
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +59,45 @@ COUNCIL_MODELS = [
     },
 ]
 
-STRATEGIES_PATH = Path(__file__).resolve().parents[1] / "config" / "strategies.yml"
+# Constants for magic numbers
+LLM_TEMPERATURE = 0.3
+LLM_MAX_TOKENS = 2048
+TOKEN_BUDGET_PCT = 3000
+RESERVE_PCT_MIN = 0.05
+NORMALIZE_TOTAL = 1.0
+CHARS_PER_TOKEN = 4
+MAX_RETRIES = 3
+BACKOFF_BASE = 2
+RESERVE_MIN_PERCENT = 0.05
+NORMALIZE_THRESHOLD = 0.005
+NORMALIZE_RANGE_MIN = 0.90
+NORMALIZE_RANGE_MAX = 1.10
+VALIDATE_TOTAL_THRESHOLD = 0.02
+RESIDUAL_THRESHOLD = 0.001
+TOTAL_VALIDATION_THRESHOLD = 0.05
+TOTAL_DISPLAY_THRESHOLD = 0.5
+ROUNDING_THRESHOLD = 0.005
+TICK_THRESHOLD_DEFAULT = 0.02
+
+
+def _validate_yaml_schema(raw_yaml: dict) -> tuple[bool, str]:
+    """Validate that the YAML structure has required fields for allocation."""
+    if "allocation" not in raw_yaml:
+        return False, "Missing 'allocation' key in YAML"
+    
+    alloc = raw_yaml["allocation"]
+    required_fields = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+    
+    missing = [f for f in required_fields if f not in alloc]
+    if missing:
+        return False, f"Missing allocation fields: {', '.join(missing)}"
+    
+    for field in required_fields:
+        value = alloc[field]
+        if not isinstance(value, (int, float)):
+            return False, f"Field '{field}' must be a number, got {type(value).__name__}"
+    
+    return True, "Schema valid"
 
 SYSTEM_PROMPT = """\
 You are a quantitative portfolio advisor for an algorithmic trading system \
@@ -152,12 +191,10 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
     # Recent trades from the decision log -- individual details with token budget
     from src.core.decision_log import recent
     TRADE_EVENTS = {"long_entry", "short_entry", "long_exit", "short_exit", "order"}
-    TOKEN_BUDGET = 3000
-    CHARS_PER_TOKEN = 4
-
+    
     trades = recent(limit=500)
     trade_events = [t for t in trades if t.get("event") in TRADE_EVENTS]
-
+    
     if trade_events:
         # Summary by agent first (always included)
         agent_counts: dict[str, int] = {}
@@ -179,7 +216,7 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
         # Individual trade log (newest first, token-budgeted)
         detail_lines = ["\n## Individual Trades (newest first)"]
         chars_used = 0
-        max_chars = TOKEN_BUDGET * CHARS_PER_TOKEN
+        max_chars = TOKEN_BUDGET_PCT * CHARS_PER_TOKEN
         included = 0
         for t in reversed(trade_events):
             ts = t.get("ts", "?")
@@ -201,7 +238,7 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
             if chars_used > max_chars:
                 detail_lines.append(
                     f"  ... {len(trade_events) - included} older trades omitted "
-                    f"(token budget: ~{TOKEN_BUDGET} tokens)")
+                    f"(token budget: ~{TOKEN_BUDGET_PCT} tokens)")
                 break
             detail_lines.append(line)
             included += 1
@@ -215,7 +252,7 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
     parts.append(
         f"\n## Vampire Config\n"
         f"Symbols: {', '.join(scfg.vampire_symbols) or 'none'}\n"
-        f"Tick threshold: {v.get('tick_threshold', 0.02)}, "
+        f"Tick threshold: {v.get('tick_threshold', TICK_THRESHOLD_DEFAULT)}, "
         f"Position size: {v.get('position_size', 10)}, "
         f"Max position: {v.get('max_position', 100)}\n"
         f"Max daily loss: ${v.get('max_daily_loss', 200)}, "
@@ -237,37 +274,56 @@ def _query_model(model_cfg: dict, context: str) -> dict:
             {"role": "user", "content": context},
         ],
         "max_tokens": model_cfg["max_tokens"],
-        "temperature": 0.3,
+        "temperature": LLM_TEMPERATURE,
     }
     headers = {"Content-Type": "application/json"}
     if LITELLM_KEY:
         headers["Authorization"] = f"Bearer {LITELLM_KEY}"
 
     body = json.dumps(payload).encode()
-    start = time.monotonic()
-
-    try:
-        req = urllib.request.Request(url, data=body, headers=headers)
-        with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as resp:
-            data = json.loads(resp.read().decode("utf-8", errors="replace"))
-        elapsed = time.monotonic() - start
-        content = data["choices"][0]["message"]["content"]
-        return {
-            "model": model_cfg["id"],
-            "label": model_cfg["label"],
-            "content": content,
-            "elapsed_s": round(elapsed, 1),
-            "error": None,
-        }
-    except Exception as exc:
-        elapsed = time.monotonic() - start
-        return {
-            "model": model_cfg["id"],
-            "label": model_cfg["label"],
-            "content": "",
-            "elapsed_s": round(elapsed, 1),
-            "error": str(exc),
-        }
+    
+    # Retry with exponential backoff (3 attempts, starting at 2 seconds)
+    for attempt in range(3):
+        start = time.monotonic()
+        
+        try:
+            req = urllib.request.Request(url, data=body, headers=headers)
+            with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as resp:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+            elapsed = time.monotonic() - start
+            content = data["choices"][0]["message"]["content"]
+            return {
+                "model": model_cfg["id"],
+                "label": model_cfg["label"],
+                "content": content,
+                "elapsed_s": round(elapsed, 1),
+                "error": None,
+            }
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as exc:
+            elapsed = time.monotonic() - start
+            log.warning(f"Attempt {attempt + 1}/3 for {model_cfg['id']} failed: {exc}")
+            if attempt == 2:  # Last attempt
+                return {
+                    "model": model_cfg["id"],
+                    "label": model_cfg["label"],
+                    "content": "",
+                    "elapsed_s": round(elapsed, 1),
+                    "error": str(exc),
+                }
+            # Wait with exponential backoff
+            sleep_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+            log.info(f"Retrying {model_cfg['id']} in {sleep_time}s...")
+            time.sleep(sleep_time)
+        except Exception as exc:
+            # Non-network errors (e.g., model response errors) fail immediately
+            elapsed = time.monotonic() - start
+            return {
+                "model": model_cfg["id"],
+                "label": model_cfg["label"],
+                "content": "",
+                "elapsed_s": round(elapsed, 1),
+                "error": str(exc),
+            }
 
 
 def _parse_yaml_block(text: str) -> dict | None:
@@ -351,12 +407,27 @@ def _normalize_allocation(alloc: dict) -> dict:
     if not required.issubset(alloc.keys()):
         return alloc
     total = sum(float(alloc[k]) for k in required)
-    if abs(total - 1.0) < 0.005:
+    if abs(total - NORMALIZE_TOTAL) < NORMALIZE_THRESHOLD:
         return alloc
-    if 0.90 <= total <= 1.10:
-        factor = 1.0 / total
-        return {k: round(float(v) * factor, 2) if k in required else v
-                for k, v in alloc.items()}
+    if NORMALIZE_RANGE_MIN <= total <= NORMALIZE_RANGE_MAX:
+        factor = NORMALIZE_TOTAL / total
+        scaled = {k: round(float(v) * factor, 2) if k in required else v
+                  for k, v in alloc.items()}
+        # Enforce reserve_pct >= 5% safety minimum
+        if scaled.get("reserve_pct", 0) < RESERVE_PCT_MIN:
+            deficit = RESERVE_PCT_MIN - scaled["reserve_pct"]
+            scaled["reserve_pct"] = RESERVE_PCT_MIN
+            other_keys = [k for k in required if k != "reserve_pct"]
+            other_total = sum(scaled[k] for k in other_keys)
+            if other_total > 0:
+                for k in other_keys:
+                    scaled[k] = round(scaled[k] - deficit * (scaled[k] / other_total), 2)
+            # Fix any float-rounding residual
+            residual = sum(scaled[k] for k in required) - NORMALIZE_TOTAL
+            if abs(residual) > RESIDUAL_THRESHOLD:
+                biggest = max(other_keys, key=lambda k: scaled[k])
+                scaled[biggest] = round(scaled[biggest] - residual, 2)
+        return scaled
     return alloc
 
 
@@ -367,11 +438,11 @@ def _validate_allocation(alloc: dict) -> tuple[bool, str]:
         return False, f"Missing keys: {required - set(alloc.keys())}"
 
     total = sum(float(alloc[k]) for k in required)
-    if abs(total - 1.0) > 0.02:
-        return False, f"Percentages sum to {total:.2f}, not 1.00"
+    if abs(total - NORMALIZE_TOTAL) > VALIDATE_TOTAL_THRESHOLD:
+        return False, f"Percentages sum to {total:.2f}, not {NORMALIZE_TOTAL:.2f}"
 
-    if float(alloc.get("reserve_pct", 0)) < 0.05:
-        return False, "Reserve must be >= 5%"
+    if float(alloc.get("reserve_pct", 0)) < RESERVE_PCT_MIN:
+        return False, f"Reserve must be >= {RESERVE_PCT_MIN:.2%}"
 
     for k in required:
         v = float(alloc[k])
@@ -385,6 +456,12 @@ def _apply_allocation(new_alloc: dict) -> tuple[bool, str]:
     """Write new allocation percentages to strategies.yml with backup."""
     if not STRATEGIES_PATH.exists():
         return False, f"Config not found: {STRATEGIES_PATH}"
+
+    # Validate YAML schema before writing
+    test_yaml = {"allocation": new_alloc}
+    valid, msg = _validate_yaml_schema(test_yaml)
+    if not valid:
+        return False, f"Schema validation failed: {msg}"
 
     backup = STRATEGIES_PATH.with_suffix(f".yml.bak.{int(time.time())}")
     shutil.copy2(STRATEGIES_PATH, backup)
@@ -427,11 +504,10 @@ def _apply_allocation(new_alloc: dict) -> tuple[bool, str]:
     )
 
     new_raw = alloc_pattern.sub(replacement, raw)
-    if new_raw == raw:
-        # Fallback: write the whole file via YAML
-        STRATEGIES_PATH.write_text(yaml.dump(full, default_flow_style=False), encoding="utf-8")
-    else:
-        STRATEGIES_PATH.write_text(new_raw, encoding="utf-8")
+    content = new_raw if new_raw != raw else yaml.dump(full, default_flow_style=False)
+    tmp = STRATEGIES_PATH.with_suffix(".yml.tmp")
+    tmp.write_text(content, encoding="utf-8")
+    os.replace(str(tmp), str(STRATEGIES_PATH))
 
     # Record in decision log
     from src.core.decision_log import record
@@ -551,6 +627,7 @@ def render_council(client, allocator, tracker) -> None:
                     results.append(future.result())
 
         st.session_state["council_results"] = results
+        st.session_state["council_rejected"] = []
         st.session_state["council_proposals"] = []
 
         # Parse proposals from each
@@ -581,9 +658,13 @@ def render_council(client, allocator, tracker) -> None:
         for label, reason in st.session_state["council_rejected"]:
             st.warning(f"**{label}** proposal rejected: {reason}")
 
-    # Approval workflow
+    # Council proposal selection (seeds the manual inputs when available)
     if "council_proposals" in st.session_state and st.session_state["council_proposals"]:
-        _render_approval(st.session_state["council_proposals"], current)
+        _render_proposal_selector(st.session_state["council_proposals"], current)
+
+    # Manual allocation editor -- ALWAYS visible
+    st.divider()
+    _render_manual_allocation(current)
 
 
 def _render_results(results: list[dict]) -> None:
@@ -599,10 +680,11 @@ def _render_results(results: list[dict]) -> None:
                 st.markdown(r["content"])
 
 
-def _render_approval(proposals: list[dict], current: dict) -> None:
-    """Approval workflow: select a proposal, review diff, approve/reject."""
+def _render_proposal_selector(proposals: list[dict], current: dict) -> None:
+    """Let the operator pick a council proposal, which seeds the manual editor."""
+    import pandas as pd
     st.divider()
-    st.subheader("Approve Allocation Change")
+    st.subheader("Council Proposals")
 
     if len(proposals) == 1:
         selected_idx = 0
@@ -616,79 +698,140 @@ def _render_approval(proposals: list[dict], current: dict) -> None:
         else:
             selected_idx = options.index(choice)
 
-    # Build the proposed allocation
+    keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
     if selected_idx == -1:
         avg_alloc = {}
-        keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
         for k in keys:
             vals = [float(p["alloc"][k]) for p in proposals]
             avg_alloc[k] = round(sum(vals) / len(vals), 2)
-        # Normalize to exactly 1.0
         total = sum(avg_alloc.values())
-        if total != 1.0:
-            avg_alloc["reserve_pct"] = round(avg_alloc["reserve_pct"] + (1.0 - total), 2)
+        if total != NORMALIZE_TOTAL:
+            avg_alloc["reserve_pct"] = round(avg_alloc["reserve_pct"] + (NORMALIZE_TOTAL - total), 2)
         proposed = avg_alloc
         st.caption("Averaging recommendations from all models")
     else:
         proposed = proposals[selected_idx]["alloc"]
 
-    # Show diff table
-    import pandas as pd
     diff = _diff_table(current, proposed)
     st.dataframe(pd.DataFrame(diff), use_container_width=True, hide_index=True)
 
-    # Editable overrides
-    with st.expander("Manual adjustments (optional)", expanded=False):
-        adjusted = {}
-        keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
-        labels = {
-            "sixfold_pct": "SIXFOLD %",
-            "options_pct": "Options %",
-            "vampire_pct": "Vampire %",
-            "pendulum_pct": "Pendulum %",
-            "reserve_pct": "Reserve %",
-        }
-        edit_cols = st.columns(5)
-        for col, k in zip(edit_cols, keys):
-            val = float(proposed.get(k, 0)) * 100
-            adjusted[k] = col.number_input(
-                labels[k], min_value=0.0, max_value=100.0,
-                value=val, step=5.0, key=f"council_edit_{k}",
-            ) / 100.0
+    if st.button("Load into editor below", use_container_width=True):
+        for k in keys:
+            st.session_state[f"ca_{k}"] = round(float(proposed.get(k, 0)) * 100, 1)
+        st.rerun()
 
-        adj_total = sum(adjusted.values())
-        if abs(adj_total - 1.0) > 0.01:
-            st.warning(f"Adjusted percentages sum to {adj_total * 100:.0f}%, should be 100%")
-        else:
-            proposed = adjusted
 
-    # Approve / Reject
-    col_approve, col_reject, col_space = st.columns([1, 1, 2])
+ALLOC_KEYS = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+ALLOC_LABELS = {
+    "sixfold_pct": "SIXFOLD %",
+    "options_pct": "Options %",
+    "vampire_pct": "Vampire %",
+    "pendulum_pct": "Pendulum %",
+    "reserve_pct": "Reserve %",
+}
+
+
+def _rebalance(changed_key: str):
+    """Proportionally adjust the other sleeves so the total stays 100%."""
+    others = [k for k in ALLOC_KEYS if k != changed_key]
+    new_val = st.session_state[f"ca_{changed_key}"]
+    others_sum = sum(st.session_state[f"ca_{k}"] for k in others)
+    remain = 100.0 - new_val
+
+    if remain < 0:
+        st.session_state[f"ca_{changed_key}"] = 100.0
+        for k in others:
+            st.session_state[f"ca_{k}"] = 0.0
+        return
+
+    if others_sum > 0:
+        factor = remain / others_sum
+        for k in others:
+            st.session_state[f"ca_{k}"] = round(st.session_state[f"ca_{k}"] * factor, 1)
+    else:
+        share = round(remain / len(others), 1)
+        for k in others:
+            st.session_state[f"ca_{k}"] = share
+
+    total = sum(st.session_state[f"ca_{k}"] for k in ALLOC_KEYS)
+    if abs(total - 100.0) > TOTAL_VALIDATION_THRESHOLD:
+        st.session_state["ca_reserve_pct"] = round(
+            st.session_state["ca_reserve_pct"] + (100.0 - total), 1
+        )
+
+
+def _render_manual_allocation(current: dict) -> None:
+    """Always-visible allocation editor with auto-rebalancing and apply button."""
+    st.subheader("Allocation Editor")
+    st.caption(
+        "Adjust any sleeve -- the others rebalance automatically to keep the total at 100%. "
+        "Click Apply to write to config/strategies.yml."
+    )
+
+    # Seed from current config if not yet initialized
+    if f"ca_{ALLOC_KEYS[0]}" not in st.session_state:
+        for k in ALLOC_KEYS:
+            st.session_state[f"ca_{k}"] = round(float(current.get(k, 0)) * 100, 1)
+
+    edit_cols = st.columns(5)
+    for col, k in zip(edit_cols, ALLOC_KEYS):
+        col.number_input(
+            ALLOC_LABELS[k], min_value=0.0, max_value=100.0,
+            step=5.0, key=f"ca_{k}",
+            on_change=_rebalance, args=(k,),
+        )
+
+    adj_total = sum(st.session_state[f"ca_{k}"] for k in ALLOC_KEYS)
+    if abs(adj_total - 100.0) > TOTAL_DISPLAY_THRESHOLD:
+        st.warning(f"Total: {adj_total:.0f}% -- should be 100%")
+    else:
+        st.success(f"Total: {adj_total:.0f}%")
+
+    proposed = {k: round(st.session_state[f"ca_{k}"] / 100.0, 4) for k in ALLOC_KEYS}
+
+    # Show what changed vs current config
+    changes = []
+    for k in ALLOC_KEYS:
+        cur = float(current.get(k, 0))
+        new = proposed[k]
+        if abs(cur - new) > ROUNDING_THRESHOLD:
+            label = ALLOC_LABELS[k].replace(" %", "")
+            changes.append(f"{label}: {cur*100:.0f}% -> {new*100:.0f}%")
+    if changes:
+        st.info("Pending changes: " + ", ".join(changes))
+
+    col_approve, col_reset, col_space = st.columns([1, 1, 2])
     with col_approve:
-        if st.button("Approve & Apply", type="primary", use_container_width=True):
-            valid, msg = _validate_allocation(proposed)
-            if not valid:
-                st.error(f"Invalid allocation: {msg}")
-            else:
-                ok, detail = _apply_allocation(proposed)
-                if ok:
-                    st.success(f"Allocation updated. {detail}")
-                    st.balloons()
-                    # Clear session state so UI refreshes
-                    for key in ["council_results", "council_proposals"]:
-                        st.session_state.pop(key, None)
+        confirming = st.session_state.get("confirm_apply", False)
+        if not confirming:
+            if st.button("Apply to config", type="primary", use_container_width=True):
+                valid, msg = _validate_allocation(proposed)
+                if not valid:
+                    st.error(f"Invalid allocation: {msg}")
                 else:
-                    st.error(f"Failed to apply: {detail}")
+                    st.session_state["confirm_apply"] = True
+                    st.rerun()
+        else:
+            st.warning("Are you sure? Click **Confirm** to write to strategies.yml.")
+            c1, c2 = st.columns(2)
+            with c1:
+                if st.button("Confirm", type="primary", use_container_width=True):
+                    ok, detail = _apply_allocation(proposed)
+                    if ok:
+                        st.toast(f"Allocation updated. {detail}")
+                        for key in ["council_results", "council_proposals",
+                                    "confirm_apply"]:
+                            st.session_state.pop(key, None)
+                        st.rerun()
+                    else:
+                        st.error(f"Failed to apply: {detail}")
+            with c2:
+                if st.button("Cancel", use_container_width=True):
+                    st.session_state.pop("confirm_apply", None)
+                    st.rerun()
 
-    with col_reject:
-        if st.button("Reject", use_container_width=True):
-            from src.core.decision_log import record
-            record(
-                "council",
-                "council_rejected",
-                thought="Operator rejected AI Council recommendation",
-                decision=json.dumps(proposed),
-            )
-            st.info("Recommendation rejected and logged.")
-            for key in ["council_results", "council_proposals"]:
-                st.session_state.pop(key, None)
+    with col_reset:
+        if st.button("Reset to current", use_container_width=True):
+            for k in ALLOC_KEYS:
+                st.session_state[f"ca_{k}"] = round(float(current.get(k, 0)) * 100, 1)
+            st.rerun()

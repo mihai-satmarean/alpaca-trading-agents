@@ -88,7 +88,7 @@ class StrategyConfig:
 
         total = (self.sixfold_pct + self.options_pct + self.vampire_pct
                  + self.pendulum_pct + self.reserve_pct)
-        if abs(total - 1.0) > 1e-6:
+        if abs(total - 1.0) > 0.01:
             problems.append(
                 f"allocation percentages sum to {total:.4f}, expected 1.0 "
                 f"(sixfold={self.sixfold_pct}, options={self.options_pct}, "
@@ -103,7 +103,7 @@ class StrategyConfig:
             ("pendulum_pct", self.pendulum_pct),
             ("reserve_pct", self.reserve_pct),
         ):
-            if not 0.0 <= pct <= 1.0:
+            if pct < 0.0 or pct > 1.0:
                 problems.append(f"{name}={pct} is outside [0, 1]")
 
         scalper = {x.upper() for x in self.vampire_symbols}
@@ -151,8 +151,9 @@ def load_config(path: Path | None = None) -> StrategyConfig:
         pendulum=raw.get("pendulum", {}) or {},
     )
 
-    for problem in cfg.validate():
-        log.warning("Config problem: %s", problem)
+    problems = cfg.validate()
+    if problems:
+        raise ValueError("Config validation failed: " + "; ".join(problems))
 
     return cfg
 

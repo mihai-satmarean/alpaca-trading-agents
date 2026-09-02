@@ -7,6 +7,8 @@ import sys
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import math
+
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -58,36 +60,59 @@ def get_client():
 
 @st.cache_resource
 def get_data():
+    """Shared MarketDataService backed by the cached Alpaca client."""
     return MarketDataService(get_client())
+
+
+@st.cache_data(ttl=5)
+def _cached_account():
+    """Account snapshot cached for 5 s to avoid duplicate API calls across fragments."""
+    return get_client().get_account()
+
+
+@st.cache_data(ttl=5)
+def _cached_positions():
+    """Position list cached for 5 s to avoid duplicate API calls across fragments."""
+    return get_client().get_positions()
+
+
+@st.cache_data(ttl=10)
+def _cached_trade_count():
+    """Today's fill count from the decision journal, refreshed every 10 s."""
+    return count_trades_today()
 
 
 @st.cache_resource
 def get_tracker():
+    """Singleton PositionTracker for the dashboard session."""
     return PositionTracker(get_client())
 
 
-@st.cache_resource
 def get_allocator():
-    return AllocationManager(get_tracker(), AllocationConfig())
+    """Fresh allocator each rerun so config changes are reflected immediately."""
+    return AllocationManager(get_tracker(), AllocationConfig.from_config())
 
 
 @st.cache_resource
 def get_chain():
+    """Singleton OptionsChain for the dashboard session."""
     return OptionsChain(get_client())
 
 
 @st.cache_resource
 def get_sixfold():
+    """Singleton SixfoldEngine and FinancialDataProvider pair."""
     return SixfoldEngine(), FinancialDataProvider()
 
 
 @st.fragment(run_every=5)
 def render_header():
+    """Top banner: account identity, equity, daily P&L %, and market status."""
     client = get_client()
     st.title("ProductAdvisors -- AI Trading Agents")
 
     clock = client.get_clock()
-    account = client.get_account()
+    account = _cached_account()
     et_now = datetime.now(ET).strftime("%H:%M:%S ET")
 
     identity = describe_broker_account(
@@ -142,12 +167,12 @@ def render_header():
 
 @st.fragment(run_every=5)
 def render_account():
-    client = get_client()
-    account = client.get_account()
+    """Five-column metric row: equity, cash, buying power, positions, trades."""
+    account = _cached_account()
     equity = float(account.equity)
     last_equity = float(getattr(account, "last_equity", equity) or equity)
     daily_pnl = equity - last_equity
-    trades = count_trades_today()
+    trades = _cached_trade_count()
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
@@ -157,22 +182,24 @@ def render_account():
     with col3:
         st.metric("Buying Power", f"${float(account.buying_power):,.2f}")
     with col4:
-        st.metric("Positions", len(client.get_positions()))
+        st.metric("Positions", len(_cached_positions()))
     with col5:
         st.metric("Trades Today", trades)
 
 
 def render_allocation(allocator: AllocationManager):
-    """Every sleeve, not three of them.
+    """Pie chart and table of per-sleeve capital usage.
 
-    This chart showed Options, Vampire and Cash while the account ran five
-    sleeves, so SIXFOLD's 45% and Pendulum's 15% were both being drawn as
-    "Cash". A capital chart that omits the largest strategy is worse than no
-    chart, because it looks authoritative.
+    Every sleeve, not three of them.  Handles NaN, negative, and zero-equity
+    edge cases so the chart never errors or misleads.
     """
+
+    def _finite(v: float) -> float:
+        return v if math.isfinite(v) else 0.0
+
     budget = allocator.get_budget()
     cfg = load_config()
-    eq = budget.total_equity or 1.0
+    eq = max(_finite(budget.total_equity), 1.0)
 
     sixfold_used = sum(
         abs(float(p.get("market_value", 0.0)))
@@ -187,12 +214,17 @@ def render_allocation(allocator: AllocationManager):
         ("Pendulum", cfg.pendulum_pct, budget.pendulum_budget, budget.pendulum_used, "#14b8a6"),
         ("Scalper",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#f97316"),
     ]
-    deployed = sum(x[3] for x in sleeves)
+    deployed = sum(_finite(x[3]) for x in sleeves)
     idle = max(0.0, eq - deployed)
 
+    pie_vals = [max(_finite(u), 0.01) for _, _, _, u, _ in sleeves] + [max(idle, 0.01)]
+    pie_labels = [
+        f"{n} ({_finite(u) / eq * 100:.0f}%)" for n, _, _, u, _ in sleeves
+    ] + [f"Idle ({idle / eq * 100:.0f}%)"]
+
     fig = go.Figure(data=[go.Pie(
-        labels=[f"{n} ({u / eq * 100:.0f}%)" for n, _, _, u, _ in sleeves] + [f"Idle ({idle / eq * 100:.0f}%)"],
-        values=[max(u, 0.01) for _, _, _, u, _ in sleeves] + [idle],
+        labels=pie_labels,
+        values=pie_vals,
         hole=0.5,
         marker_colors=[c for *_, c in sleeves] + ["#94a3b8"],
         textinfo="label",
@@ -217,6 +249,7 @@ def render_allocation(allocator: AllocationManager):
 
 
 def render_market_snapshot(data_svc: MarketDataService):
+    """Quote table for a fixed watchlist of major tickers."""
     symbols = ["SPY", "QQQ", "AAPL", "MSFT", "NVDA", "AMZN", "TSLA", "META"]
     rows = []
     for sym in symbols:
@@ -247,6 +280,7 @@ def render_market_snapshot(data_svc: MarketDataService):
 
 
 def render_csp_scanner(client: AlpacaClient, data_svc: MarketDataService):
+    """On-demand cash-secured-put chain scanner with affordability filter."""
     chain = get_chain()
     csp = CashSecuredPutStrategy(client, chain, data_svc, get_tracker())
 
@@ -292,7 +326,8 @@ def render_csp_scanner(client: AlpacaClient, data_svc: MarketDataService):
 
 @st.fragment(run_every=5)
 def render_positions(client: AlpacaClient):
-    positions = client.get_positions()
+    """Live position table with unrealized P&L, refreshed every 5 s."""
+    positions = _cached_positions()
     if not positions:
         st.info("No open positions")
         return
@@ -325,14 +360,38 @@ def render_positions(client: AlpacaClient):
 
 @st.fragment(run_every=5)
 def render_orders(client: AlpacaClient):
+    """Open-order table with agent attribution from the decision journal."""
     orders = client.get_orders("open")
     if not orders:
         st.info("No open orders")
         return
 
+    from src.core.decision_log import recent
+    log_entries = recent(limit=500)
+    ORDER_EVENTS = {"order", "long_entry", "short_entry", "csp_sell", "sell_put"}
+
+    _agent_by_sym: dict[str, str] = {}
+    for entry in reversed(log_entries):
+        sym = entry.get("symbol")
+        if sym and sym not in _agent_by_sym and entry.get("event") in ORDER_EVENTS:
+            _agent_by_sym[sym] = entry.get("agent", "?")
+
+    def _guess_agent(symbol: str, side: str) -> str:
+        """Find the agent that most recently placed an order for this symbol."""
+        if symbol in _agent_by_sym:
+            return _agent_by_sym[symbol]
+        if len(symbol) >= 15 and ("P" in symbol[6:] or "C" in symbol[6:]):
+            if side == "sell" and "P" in symbol[6:]:
+                return "options/csp"
+            if side == "sell" and "C" in symbol[6:]:
+                return "options/cc"
+            return "options"
+        return "?"
+
     rows = []
     for o in orders:
         rows.append({
+            "Agent": _guess_agent(o.symbol, o.side.value),
             "Symbol": o.symbol,
             "Side": o.side.value,
             "Qty": o.qty,
@@ -345,6 +404,7 @@ def render_orders(client: AlpacaClient):
 
 
 def render_strategy_pnl(tracker: PositionTracker):
+    """Bar chart of per-strategy realized P&L (currently unused in main)."""
     strategies = {"csp": "Cash-Secured Puts", "covered_call": "Covered Calls", "vampire": "Vampire Scalper"}
     data = []
     for key, label in strategies.items():
@@ -372,6 +432,7 @@ def render_strategy_pnl(tracker: PositionTracker):
 
 
 def render_trade_history(tracker: PositionTracker):
+    """Table of the last 50 recorded trades (currently unused in main)."""
     trades = tracker.trades
     if not trades:
         st.info("No trades recorded this session")
@@ -560,6 +621,7 @@ def render_sixfold_scanner():
 
 
 def main():
+    """Entry point: connect to Alpaca, render header, tabs, and all sub-views."""
     try:
         client = get_client()
         data_svc = get_data()

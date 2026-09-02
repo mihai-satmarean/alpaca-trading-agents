@@ -76,7 +76,24 @@ class StrategyConfig:
 
     @property
     def sixfold_universe(self) -> list[str]:
-        return [str(x).upper() for x in (self.sixfold.get("universe") or [])]
+        """The inline list plus, when configured, a one-ticker-per-line file.
+
+        The S&P 400 is 400 names; a yml list that long is unreadable and gets
+        edited badly. `universe_file` is relative to the config directory.
+        Order is preserved and duplicates dropped, inline names first.
+        """
+        names = [str(x).upper() for x in (self.sixfold.get("universe") or [])]
+        uf = self.sixfold.get("universe_file")
+        if uf:
+            import os
+            path = uf if os.path.isabs(uf) else os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "..", "config", uf)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    names += [ln.strip().upper() for ln in fh if ln.strip() and not ln.startswith("#")]
+            except OSError as exc:
+                raise RuntimeError(f"sixfold.universe_file {uf!r} unreadable: {exc}") from exc
+        return list(dict.fromkeys(names))
 
     @property
     def sixfold_buy_threshold(self) -> float:

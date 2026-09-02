@@ -62,14 +62,31 @@ class CoveredCallStrategy:
         snapshot = self._tracker.get_snapshot()
         opportunities: list[CoveredCallOpportunity] = []
 
+        # Shares already backing a short call are not free to be written
+        # against again. Without this, a position that reached 100 shares
+        # with one call open was re-scanned every five minutes and a second
+        # call submitted against the same shares: a naked call, at market.
+        from src.risk.allocation import parse_occ
+        short_calls: dict[str, int] = {}
+        for s, p in snapshot.positions.items():
+            occ = parse_occ(str(s).upper())
+            if occ is None or occ.contract_type != "call":
+                continue
+            q = float(p.get("qty", 0) or 0)
+            if q < 0:
+                short_calls[occ.root] = short_calls.get(occ.root, 0) + int(abs(q))
+
         for sym, pos in snapshot.positions.items():
+            if parse_occ(str(sym).upper()) is not None:
+                continue
             qty = abs(pos["qty"])
             side = pos["side"]
 
-            if side != "long" or qty < 100:
+            free_shares = qty - 100 * short_calls.get(str(sym).upper(), 0)
+            if side != "long" or free_shares < 100:
                 continue
 
-            contracts_possible = int(qty // 100)
+            contracts_possible = int(free_shares // 100)
             current_price = pos["current_price"]
 
             calls = self._chain.get_calls(

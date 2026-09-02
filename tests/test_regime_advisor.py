@@ -337,6 +337,29 @@ class TestWiring:
         a._regime_thread.join(timeout=2)
         assert not a._regime_thread.is_alive()
 
+    def test_the_advisor_runs_in_shadow_mode_when_the_sleeve_is_unfunded(self):
+        """At 0% the engines idle but the verdicts must still be produced, or the
+        gate can never show the skill that would justify funding it."""
+        import asyncio
+
+        from src.agents.vampire import VampireAgent
+        data = MagicMock()
+        data.get_recent_minute_bars.return_value = _bars()
+        allocator = MagicMock()
+        allocator.get_budget.return_value = MagicMock(vampire_budget=0.0, vampire_available=0.0)
+        adv, _ = _advisor()
+        adv.window_seconds = 60
+        a = VampireAgent(MagicMock(), data, MagicMock(), MagicMock(), allocator,
+                         symbols=["QQQ"], regime_advisor=adv)
+        asyncio.run(a.run())          # returns at the zero-budget check
+        deadline = time.time() + 2
+        while data.get_recent_minute_bars.call_count < 1 and time.time() < deadline:
+            time.sleep(0.01)
+        assert a._regime_thread is not None and a._regime_thread.is_alive()
+        assert adv.entry_allowed("QQQ") is True      # a verdict was produced
+        assert a._client.market_order.call_count == 0
+        a.stop_all()
+
     def test_the_repo_config_enables_the_advisor_on_dell4_chat(self):
         from src.core.config import load_config
         cfg = load_config()

@@ -509,7 +509,7 @@ def _render_regime_verdicts(cfg) -> None:
         if sym and sym not in latest:
             latest[sym] = rec
     if not latest:
-        st.info("No verdicts journalled yet (the advisor runs only while the sleeve is funded).")
+        st.info("No verdicts journalled yet. The advisor starts with the agent and runs in shadow mode while the sleeve is unfunded.")
         return
     now = time.time()
     rows = []

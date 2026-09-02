@@ -314,9 +314,15 @@ class VampireAgent:
             log.warning("Circuit breaker active, vampire agent not starting")
             return
 
+        # The advisor runs whether or not the sleeve is funded. At 0% this is
+        # a shadow mode: every verdict is journalled and shown on the dashboard
+        # and nothing trades, which is how a gate earns the right to be funded.
+        self._start_regime_loop()
+
         budget = self._allocator.get_budget()
         if budget.vampire_budget <= 0:
-            log.warning("Vampire allocation is zero; agent will not start")
+            log.warning("Vampire allocation is zero; engines idle, regime advisor "
+                        "in shadow mode")
             return
         if budget.vampire_available < 500:
             log.warning("Insufficient vampire budget ($%.0f), not starting", budget.vampire_available)
@@ -325,7 +331,6 @@ class VampireAgent:
         self._apply_sleeve_limits()
         self._drop_unshortable()
         self._apply_spread_thresholds()
-        self._start_regime_loop()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)

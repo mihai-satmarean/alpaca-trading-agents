@@ -80,3 +80,25 @@ class TestContextBuildsOnMain:
         tracker = MagicMock(); tracker.get_snapshot.return_value = MagicMock(daily_pnl=500.0, positions={}, equity=99000.0)
         ctx = C._build_portfolio_context(client, allocator, tracker)
         assert "SIXFOLD" in ctx and "Pendulum" in ctx
+
+
+class TestReasoningModelsWithNoContent:
+    """Live crash on 2026-09-02: one advisor returned content None (its text
+    was in reasoning_content) and _parse_yaml_block raised TypeError, taking
+    the whole dashboard page down with a traceback."""
+
+    def test_none_content_is_parsed_as_no_proposal_not_a_crash(self):
+        assert C._parse_yaml_block(None) is None
+        assert C._parse_yaml_block("") is None
+
+    def test_reasoning_content_is_used_when_content_is_none(self, monkeypatch):
+        class R:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b'{"choices":[{"message":{"content":null,"reasoning_content":"```yaml\\nsixfold_pct: 0.6\\n```"}}]}'
+        monkeypatch.setattr(C.urllib.request, "urlopen", lambda *a, **k: R())
+        r = C._query_model({"id": "m", "label": "m", "base_url": "http://h", "max_tokens": 10}, "ctx")
+        assert "sixfold_pct" in (r.get("content") or "")
+
+    def test_the_token_budget_is_large_enough_for_a_thinking_model(self):
+        assert all(m["max_tokens"] >= 4096 for m in C.COUNCIL_MODELS)

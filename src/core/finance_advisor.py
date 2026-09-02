@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import ssl
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,6 +43,8 @@ COUNCIL_MODELS = [
 ]
 
 CONSENSUS_THRESHOLD = 2  # minimum agreeing advisors to pass
+
+last_council: dict | None = None
 
 
 @dataclass
@@ -73,6 +76,102 @@ class CouncilDecision:
         )
         for op in self.opinions:
             log.info("  [%s] %s: %s", op.role, op.verdict.upper(), op.reasoning[:100])
+        from src.core.decision_log import record
+        record(
+            "council", "verdict",
+            symbol=self.symbol,
+            thought=self.summary,
+            decision="approved" if self.approved else "rejected",
+            action=self.action,
+            votes=[
+                {"role": op.role, "model": op.model, "verdict": op.verdict,
+                 "reasoning": op.reasoning, "responded": op.responded}
+                for op in self.opinions
+            ],
+        )
+        global last_council
+        last_council = {
+            "symbol": self.symbol,
+            "action": self.action,
+            "approved": self.approved,
+            "summary": self.summary,
+            "votes_for": self.votes_for,
+            "votes_against": self.votes_against,
+            "abstentions": self.abstentions,
+            "votes": [
+                {"role": op.role, "verdict": op.verdict, "reasoning": op.reasoning}
+                for op in self.opinions
+            ],
+        }
+
+
+def _model_thinks(model: str) -> bool:
+    """Fino1 is the council member trained to reason before it votes.
+
+    Qwen3.6 / 3.8 fill a small token budget with reasoning_content and leave
+    content null. They keep thinking off. Fino1 is the one we actually want
+    to think; shutting it up made it emit `## Thinking` into content and
+    then abstain because the vote parser only read the first 80 characters.
+    """
+    return "fino1" in (model or "").lower()
+
+
+def _extract_message_text(message: dict) -> str:
+    """Prefer visible content; keep the thinking trace when that is all we got."""
+    if not isinstance(message, dict):
+        return str(message or "").strip()
+    content = message.get("content") or ""
+    if isinstance(content, list):
+        content = " ".join(
+            part.get("text", "") if isinstance(part, dict) else str(part)
+            for part in content
+        )
+    reasoning = message.get("reasoning_content") or message.get("reasoning") or ""
+    parts = []
+    if str(reasoning).strip():
+        parts.append(str(reasoning).strip())
+    if str(content).strip():
+        parts.append(str(content).strip())
+    return "\n".join(parts).strip()
+
+
+_THINK_BLOCK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _trailing_vote_line(text: str) -> str:
+    """Last line that is actually a vote, even when ## Answer never appeared.
+
+    Staging 2026-09-01: Fino1 wrote a ## Thinking scratchpad and never a
+    parseable ## Answer, so 63/63 of its votes were abstentions. The vote,
+    when it exists at all, is almost always the last non-empty line.
+    """
+    for line in reversed((text or "").splitlines()):
+        stripped = line.strip().lstrip("#").strip()
+        if not stripped:
+            continue
+        upper = stripped.upper()
+        if upper.startswith("APPROVE") or upper.startswith("REJECT"):
+            return stripped
+    return ""
+
+
+def _answer_for_verdict(text: str) -> str:
+    """Drop the scratchpad so APPROVE/REJECT in the think trace cannot hide the vote."""
+    stripped = _THINK_BLOCK.sub(" ", text or "")
+    lower = stripped.lower()
+    for marker in ("## answer", "\nanswer:", "\nfinal answer"):
+        idx = lower.rfind(marker)
+        if idx >= 0:
+            return stripped[idx:].strip()
+    vote = _trailing_vote_line(stripped)
+    if vote:
+        return vote
+    head = stripped.lstrip()
+    if head.lower().startswith("## thinking"):
+        paras = [p.strip() for p in stripped.split("\n\n") if p.strip()]
+        if paras:
+            return paras[-1]
+    return stripped.strip()
 
 
 def _llm_call(model: str, system: str, user: str,
@@ -100,11 +199,16 @@ def _llm_call(model: str, system: str, user: str,
     if max_tokens is None:
         max_tokens = int(os.environ.get("COUNCIL_MAX_TOKENS", "4000"))
 
-    # The wall must clear the slowest advisor's measured latency at that
-    # budget. qwen38's 34.5s would have sat right on the old 25s+10s wall and
-    # been cancelled as a timeout abstention, trading one silent abstainer for
-    # another.
-    timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
+    thinks = _model_thinks(model)
+    if thinks:
+        max_tokens = max(
+            max_tokens,
+            int(os.environ.get("COUNCIL_THINKING_MAX_TOKENS", "4000")),
+        )
+        timeout = float(os.environ.get("COUNCIL_THINKING_TIMEOUT",
+                                       os.environ.get("COUNCIL_TIMEOUT", "60")))
+    else:
+        timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
 
     body = json.dumps({
         "model": model,
@@ -114,6 +218,7 @@ def _llm_call(model: str, system: str, user: str,
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "chat_template_kwargs": {"enable_thinking": thinks},
     }).encode()
 
     req = urllib.request.Request(
@@ -122,7 +227,11 @@ def _llm_call(model: str, system: str, user: str,
     )
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         payload = json.load(r)
-    return payload["choices"][0]["message"]["content"].strip()
+    message = ((payload.get("choices") or [{}])[0].get("message") or {})
+    text = _extract_message_text(message)
+    if not text:
+        raise ValueError(f"{model} returned empty content")
+    return text
 
 
 _APPROVE_NEGATIONS = ("NOT APPROVE", "N'T APPROVE", "CANNOT APPROVE",
@@ -163,10 +272,10 @@ def _query_advisor(model: str, role: str, system: str, prompt: str,
                    approve_word: str, reject_word: str) -> AdvisorOpinion:
     try:
         text = _llm_call(model, system, prompt)
-        verdict = _parse_verdict(text, approve_word, reject_word)
+        verdict = _parse_verdict(_answer_for_verdict(text), approve_word, reject_word)
         return AdvisorOpinion(
             model=model, role=role, verdict=verdict,
-            reasoning=text[:500], responded=True,
+            reasoning=text[:4000], responded=True,
         )
     except Exception:
         log.warning("Advisor %s (%s) unavailable", role, model, exc_info=True)
@@ -186,7 +295,10 @@ def _run_council(action: str, symbol: str, system_prompts: dict[str, str],
     # two must not disagree: a wall shorter than the per-request timeout
     # cancels advisors that were about to answer and records them as
     # abstentions, which is the same silent-vote failure this file just fixed.
-    wall_timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60")) + 10
+    think_to = float(os.environ.get("COUNCIL_THINKING_TIMEOUT",
+                                    os.environ.get("COUNCIL_TIMEOUT", "60")))
+    base_to = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
+    wall_timeout = max(base_to, think_to) + 10
 
     with ThreadPoolExecutor(max_workers=len(COUNCIL_MODELS)) as pool:
         futures = {}
@@ -254,7 +366,8 @@ _EQUITY_BUY_PROMPTS = {
     "Financial Reasoner": (
         "You are a financial reasoning expert trained on financial QA datasets. "
         "Evaluate this equity buy signal using quantitative reasoning. "
-        "Start your answer with APPROVE or REJECT, then give 2-3 sentences of reasoning. "
+        "Think if you need to. After any thinking, the visible answer must start "
+        "with APPROVE or REJECT, then 2-3 sentences. "
         "Focus on: numerical consistency of the score, P/E and growth rate alignment, "
         "and whether the valuation metrics support the buy thesis."
     ),
@@ -293,7 +406,8 @@ _CSP_PROMPTS = {
     "Financial Reasoner": (
         "You are a financial reasoning expert. Evaluate this cash-secured put "
         "using quantitative analysis. "
-        "Start with APPROVE or REJECT, then 2-3 sentences. "
+        "Think if you need to. After any thinking, the visible answer must start "
+        "with APPROVE or REJECT, then 2-3 sentences. "
         "Focus on: annualized return vs risk-free rate, implied volatility "
         "rank, and whether the premium compensates for assignment risk."
     ),

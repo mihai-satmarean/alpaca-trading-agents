@@ -123,7 +123,7 @@ class CoveredCallStrategy:
 
         for opp in opportunities[:max_trades]:
             try:
-                order = self._client.trading.submit_order(
+                order = self._client.submit_order(
                     MarketOrderRequest(
                         symbol=opp.candidate.symbol,
                         qty=opp.contracts_possible,

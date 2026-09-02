@@ -8,7 +8,7 @@ and nothing asserted that the trading path ever called them.
 from __future__ import annotations
 
 from datetime import datetime
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -211,6 +211,16 @@ class TestGatesAreActuallyCalled:
     passed, while no production code path called either. These assert the wiring
     itself, which is the part that was missing."""
 
+    def setup_method(self):
+        self._council_patch = patch(
+            "src.strategies.csp.evaluate_csp",
+            return_value=MagicMock(approved=True, summary="approved"),
+        )
+        self._council_patch.start()
+
+    def teardown_method(self):
+        self._council_patch.stop()
+
     def _strategy(self, allocator, breaker, cash_required=12_000.0):
         from datetime import date, timedelta
 
@@ -256,7 +266,7 @@ class TestGatesAreActuallyCalled:
         executed = strat.execute_best(max_trades=2)
 
         allocator.can_allocate_options.assert_called_once_with(12_000.0)
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
         assert executed == []
 
     def test_per_trade_limit_is_consulted_and_blocks_the_order(self):
@@ -270,7 +280,7 @@ class TestGatesAreActuallyCalled:
         executed = strat.execute_best(max_trades=2)
 
         breaker.can_trade.assert_called_once_with("SPY241220P00450000", 12_000.0)
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
         assert executed == []
 
     def test_order_placed_and_collateral_reported_when_both_gates_pass(self):
@@ -283,7 +293,7 @@ class TestGatesAreActuallyCalled:
         strat, client = self._strategy(allocator, breaker)
         executed = strat.execute_best(max_trades=1)
 
-        client.trading.submit_order.assert_called_once()
+        client.submit_order.assert_called_once()
         assert len(executed) == 1
         assert executed[0]["collateral"] == pytest.approx(12_000.0)
 
@@ -304,5 +314,5 @@ class TestGatesAreActuallyCalled:
 
         executed = strat.execute_best(max_trades=5)
         assert len(executed) == 1, "the second must be refused"
-        assert client.trading.submit_order.call_count == 1
+        assert client.submit_order.call_count == 1
         assert any("concentration" in r["reason"] for r in strat.last_rejections)

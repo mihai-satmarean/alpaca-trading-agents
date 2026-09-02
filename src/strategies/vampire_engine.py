@@ -20,6 +20,7 @@ from zoneinfo import ZoneInfo
 from alpaca.trading.enums import OrderSide, TimeInForce
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.decision_log import record, record_throttled
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 
@@ -98,6 +99,7 @@ class VampireEngine:
         self._realized_pnl: float = 0.0
         self._reject_streak: int = 0
         self._reject_cooldown_until: float = 0.0
+        self.last_thought: dict = {}
 
     @property
     def state(self) -> VampireState:
@@ -189,12 +191,27 @@ class VampireEngine:
         return len(self._trade_timestamps) < self.cfg.max_trades_per_min
 
     def _open_lot(self, qty: int, price: float, long: bool):
-        """Fold a new lot into the running average entry price."""
+        """Fold a new lot into the running average entry price.
+
+        Long and short lots must never be blended. Staging 2026-09-01 booked
+        HOOD +$10,016 on 5 shares after a side flip reused the previous
+        average; resetting the basis on an opposite-side open is the cheap
+        correction, and it matches what a new position actually cost.
+        """
+        same_side = (
+            (self._net_position > 0 and long)
+            or (self._net_position < 0 and not long)
+        )
         prior_qty = abs(self._net_position)
-        if self._avg_entry is None or prior_qty == 0:
+        if self._avg_entry is None or prior_qty == 0 or not same_side:
+            if prior_qty and not same_side:
+                log.warning(
+                    "%s: opposite-side open while net=%+d @ %s; resetting basis to %.4f",
+                    self.cfg.symbol, self._net_position, self._avg_entry, price,
+                )
             self._avg_entry = price
-        else:
-            self._avg_entry = ((self._avg_entry * prior_qty) + (price * qty)) / (prior_qty + qty)
+            return
+        self._avg_entry = ((self._avg_entry * prior_qty) + (price * qty)) / (prior_qty + qty)
 
     def _close_lot(self, qty: int, price: float, long: bool) -> float:
         """Realize P&L against the average entry. Returns the realized amount.
@@ -205,10 +222,46 @@ class VampireEngine:
         difference between the exit price and what the position actually cost.
         A losing round trip was booked as a gain, and daily P&L could only rise.
         """
+        if qty <= 0:
+            return 0.0
+        if long and self._net_position <= 0:
+            return 0.0
+        if (not long) and self._net_position >= 0:
+            return 0.0
+        close_qty = min(qty, abs(self._net_position))
         entry = self._avg_entry if self._avg_entry is not None else price
-        realized = qty * (price - entry) if long else qty * (entry - price)
+        realized = close_qty * (price - entry) if long else close_qty * (entry - price)
+        cap = close_qty * max(abs(price), abs(entry), 1.0) * 2.0
+        if abs(realized) > cap:
+            log.error(
+                "%s: realized $%.2f on %d shares @ %.2f vs entry %.2f is not a "
+                "scalper P&L; clamping to $%.2f",
+                self.cfg.symbol, realized, close_qty, price, entry, cap,
+            )
+            realized = cap if realized > 0 else -cap
         self._realized_pnl += realized
         self._daily_pnl += realized
+        return realized
+
+    def _fill_close_then_flip(self, fill_qty: int, price: float, *, was_long: bool) -> float:
+        """Close what we actually hold, then open any leftover as the other side.
+
+        An IOC that fills more than the current net used to keep the old average
+        while the signed quantity flipped, which is how a handful of shares
+        reported a four-digit daily P&L.
+        """
+        close_qty = min(fill_qty, abs(self._net_position))
+        leftover = fill_qty - close_qty
+        realized = self._close_lot(close_qty, price, long=was_long) if close_qty else 0.0
+        if was_long:
+            self._net_position -= close_qty
+        else:
+            self._net_position += close_qty
+        if self._net_position == 0:
+            self._avg_entry = None
+        if leftover:
+            self._open_lot(leftover, price, long=not was_long)
+            self._net_position += leftover if not was_long else -leftover
         return realized
 
     def _record_bleed(self, qty: float, delta: float, action: str, pnl: float = 0.0):
@@ -305,12 +358,28 @@ class VampireEngine:
         self._reject_streak = 0
         self._reject_cooldown_until = 0.0
 
+    def _watch(self, thought: str, decision: str, *, force: bool = False, **extra) -> None:
+        self.last_thought = {"thought": thought, "decision": decision, **extra}
+        kwargs = dict(
+            symbol=self.cfg.symbol, thought=thought, decision=decision, **extra,
+        )
+        if force:
+            record("vampire", decision, **kwargs)
+            return
+        record_throttled(
+            f"vampire:{self.cfg.symbol}:{decision}", 15.0,
+            "vampire", "watching", **kwargs,
+        )
+
     def tick(self, current_price: float, vwap: float | None = None):
         """Process one price tick. Core bi-directional logic from the spec."""
         if self._state == VampireState.STOPPED:
+            self._watch("engine stopped", "idle")
             return
 
         if time.time() < self._reject_cooldown_until:
+            left = self._reject_cooldown_until - time.time()
+            self._watch(f"reject cooldown {left:.0f}s remaining", "cooldown")
             return
 
         if self._is_paused():
@@ -323,6 +392,7 @@ class VampireEngine:
             if self._net_position != 0:
                 self._flatten_all("session_end")
             self._state = VampireState.IDLE
+            self._watch("outside 09:30-15:55 ET", "idle")
             return
 
         self._state = VampireState.WATCHING
@@ -331,7 +401,16 @@ class VampireEngine:
         delta = current_price - ref
 
         if not self._check_rate_limit():
+            self._watch(
+                f"mid={current_price:.2f} delta={delta:+.4f} but "
+                f"{self.cfg.max_trades_per_min}/min cap hit",
+                "rate_limited",
+            )
             return
+
+        traded = False
+        action = ""
+        qty_done = 0
 
         if delta >= self.cfg.tick_threshold:
             if self._net_position > 0:
@@ -341,11 +420,11 @@ class VampireEngine:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "sell", qty,
                                                current_price, "vampire")
-                    realized = self._close_lot(qty, current_price, long=True)
-                    self._net_position -= qty
-                    if self._net_position == 0:
-                        self._avg_entry = None
+                    realized = self._fill_close_then_flip(
+                        qty, current_price, was_long=True,
+                    )
                     self._record_bleed(qty, delta, "long_exit", realized)
+                    traded, action, qty_done = True, "long_exit", qty
 
             elif abs(self._net_position) < self.cfg.max_position:
                 room = self.cfg.max_position - abs(self._net_position)
@@ -360,6 +439,7 @@ class VampireEngine:
                     self._open_lot(qty, current_price, long=False)
                     self._net_position -= qty
                     self._record_bleed(qty, delta, "short_entry")
+                    traded, action, qty_done = True, "short_entry", qty
 
         elif delta <= -self.cfg.tick_threshold:
             if self._net_position < 0:
@@ -369,11 +449,11 @@ class VampireEngine:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "buy_to_cover", qty,
                                                current_price, "vampire")
-                    realized = self._close_lot(qty, current_price, long=False)
-                    self._net_position += qty
-                    if self._net_position == 0:
-                        self._avg_entry = None
+                    realized = self._fill_close_then_flip(
+                        qty, current_price, was_long=False,
+                    )
                     self._record_bleed(qty, abs(delta), "short_exit", realized)
+                    traded, action, qty_done = True, "short_exit", qty
 
             elif self._net_position < self.cfg.max_position:
                 room = self.cfg.max_position - self._net_position
@@ -388,6 +468,21 @@ class VampireEngine:
                     self._open_lot(qty, current_price, long=True)
                     self._net_position += qty
                     self._record_bleed(qty, abs(delta), "long_entry")
+                    traded, action, qty_done = True, "long_entry", qty
+
+        picture = (
+            f"mid={current_price:.2f} ref={ref:.2f} delta={delta:+.4f} "
+            f"thresh={self.cfg.tick_threshold:.4f} pos={self._net_position:+d}"
+        )
+        if traded:
+            self._watch(picture, action, force=True, qty=qty_done, price=current_price)
+        elif abs(delta) < self.cfg.tick_threshold:
+            self._watch(picture, "below_threshold")
+        else:
+            self._watch(
+                f"{picture} max={self.cfg.max_position} cap={self.cfg.max_notional}",
+                "gated",
+            )
 
         marked = self.total_pnl(current_price)
         if marked <= -self.cfg.max_daily_loss:
@@ -451,7 +546,17 @@ class VampireEngine:
 
         self._clear_rejects()
 
-        if self._is_terminal(getattr(order, "status", None)):
+        status = getattr(order, "status", None)
+        if status is None and isinstance(order, dict):
+            status = order.get("status")
+        if str(status or "").lower() == "dry_run":
+            try:
+                filled = order.get("filled_qty") if isinstance(order, dict) else getattr(order, "filled_qty", qty)
+                return int(float(filled or qty))
+            except (TypeError, ValueError):
+                return qty
+
+        if self._is_terminal(status):
             return self._filled_or(order, qty)
 
         oid = getattr(order, "id", None)
@@ -538,6 +643,12 @@ class VampireEngine:
 
     def _flatten_all(self, reason: str):
         log.info("Flattening all vampire positions: %s (net=%d)", reason, self._net_position)
+        record(
+            "vampire", "flatten",
+            symbol=self.cfg.symbol,
+            thought=f"net={self._net_position:+d}",
+            decision=reason,
+        )
         if self._net_position == 0:
             return
         try:

@@ -11,6 +11,7 @@ from alpaca.trading.requests import LimitOrderRequest
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.config import get_config
+from src.core.finance_advisor import evaluate_csp
 from src.core.market_data import MarketDataService
 from src.core.options_chain import OptionCandidate, OptionsChain
 from src.core.position_tracker import PositionTracker
@@ -290,6 +291,26 @@ class CashSecuredPutStrategy:
                 log.info("Skipping %s: blocked by risk limits ($%.0f notional)", sym, need)
                 continue
 
+            premium = float(getattr(opp, "bid", 0) or 0)
+            council = evaluate_csp(
+                under,
+                float(opp.candidate.strike_price),
+                int(opp.candidate.days_to_expiry),
+                premium,
+                float(opp.current_price),
+                extra_context=(
+                    f"score={opp.score:.2f} annualized="
+                    f"{opp.annualized_return * 100:.1f}% "
+                    f"collateral=${need:.0f}"
+                ),
+            )
+            if not council.approved:
+                reason = f"Council rejected ({council.summary})"
+                log.info("Skipping %s: %s", sym, reason)
+                if len(self.last_rejections) < MAX_REJECTIONS:
+                    self.last_rejections.append({"symbol": under, "reason": reason})
+                continue
+
             try:
                 # Sell at the bid rather than at market. Hitting the bid is
                 # marketable so it fills like a market order, but it puts a
@@ -300,7 +321,7 @@ class CashSecuredPutStrategy:
                 if not limit or limit <= 0:
                     log.warning("Skipping %s: no bid to price the limit against", sym)
                     continue
-                order = self._client.trading.submit_order(
+                order = self._client.submit_order(
                     LimitOrderRequest(
                         symbol=sym,
                         qty=1,
@@ -328,6 +349,7 @@ class CashSecuredPutStrategy:
                     "expiry": str(opp.candidate.expiration),
                     "collateral": need,
                     "order_id": str(order.id),
+                    "council": council.summary,
                 })
             except Exception:
                 log.exception("Failed to place CSP order for %s", sym)

@@ -35,10 +35,18 @@ cp .env.example .env
 # Run tests
 uv run pytest
 
-# Start trading system
+# Start trading system (contest paper account — Frank's EC2, not the laptop)
 uv run python -m src.agents.coordinator
 
-# Launch dashboard
+# Laptop: isolated staging paper account (never the contest book).
+# LLM calls go through k3s LiteLLM (pillar5 :30400), not Dell4 :4000.
+./scripts/run_staging.sh smoke
+./scripts/run_staging.sh llm
+./scripts/run_staging.sh hunt
+./scripts/run_staging.sh dashboard
+./scripts/run_staging.sh dry-run
+
+# Launch dashboard (uses ALPACA_ENV; prefer run_staging.sh dashboard on a laptop)
 uv run streamlit run dashboard/app.py
 
 # Backtest vampire algorithm

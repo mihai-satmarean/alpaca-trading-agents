@@ -133,10 +133,10 @@ class TestExecution:
             _make_call("MSFT260101C00406000", "MSFT", 406.0),
         ]
         s, client = _strategy(calls=calls, quote_mid=400.0)
-        client.trading.submit_order.return_value = MagicMock(id="order-123")
+        client.submit_order.return_value = MagicMock(id="order-123")
         orders = s.execute(["MSFT"], budget=5000.0)
         assert len(orders) == 1
-        req = client.trading.submit_order.call_args[0][0]
+        req = client.submit_order.call_args[0][0]
         from alpaca.trading.enums import OrderClass
         assert req.order_class == OrderClass.MLEG
 
@@ -146,9 +146,9 @@ class TestExecution:
             _make_call("V260101C00307000", "V", 307.0),
         ]
         s, client = _strategy(calls=calls, quote_mid=300.0)
-        client.trading.submit_order.return_value = MagicMock(id="order-456")
+        client.submit_order.return_value = MagicMock(id="order-456")
         s.execute(["V"], budget=5000.0)
-        req = client.trading.submit_order.call_args[0][0]
+        req = client.submit_order.call_args[0][0]
         assert len(req.legs) == 2
 
     def test_long_leg_is_buy_short_leg_is_sell(self):
@@ -157,9 +157,9 @@ class TestExecution:
             _make_call("V260101C00307000", "V", 307.0),
         ]
         s, client = _strategy(calls=calls, quote_mid=300.0)
-        client.trading.submit_order.return_value = MagicMock(id="order-789")
+        client.submit_order.return_value = MagicMock(id="order-789")
         s.execute(["V"], budget=5000.0)
-        req = client.trading.submit_order.call_args[0][0]
+        req = client.submit_order.call_args[0][0]
         from alpaca.trading.enums import OrderSide
         sides = {leg.side for leg in req.legs}
         assert OrderSide.BUY in sides
@@ -171,7 +171,7 @@ class TestExecution:
             _make_call("F260101C00011000", "F", 11.0),
         ]
         s, client = _strategy(calls=calls, quote_mid=10.5, budget=200.0)
-        client.trading.submit_order.return_value = MagicMock(id="ok")
+        client.submit_order.return_value = MagicMock(id="ok")
         orders = s.execute(["F"], budget=40.0)
         total_debit = sum(o["max_debit"] for o in orders)
         assert total_debit <= 40.0
@@ -185,7 +185,7 @@ class TestExecution:
         ]
         s, client = _strategy(calls=calls, quote_mid=10.0, budget=50_000.0)
         s.cfg.max_spreads_per_symbol = 1
-        client.trading.submit_order.return_value = MagicMock(id="ok")
+        client.submit_order.return_value = MagicMock(id="ok")
         orders = s.execute(["F"], budget=50_000.0)
         assert len(orders) <= 1
 
@@ -199,7 +199,7 @@ class TestRiskGates:
         s, client = _strategy(calls=calls, quote_mid=100.0, can_trade=False)
         orders = s.execute(["X"], budget=5000.0)
         assert orders == []
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
     def test_broker_rejection_is_safe(self):
         calls = [
@@ -207,7 +207,7 @@ class TestRiskGates:
             _make_call("X260101C00102000", "X", 102.0),
         ]
         s, client = _strategy(calls=calls, quote_mid=100.0)
-        client.trading.submit_order.side_effect = RuntimeError("rejected")
+        client.submit_order.side_effect = RuntimeError("rejected")
         orders = s.execute(["X"], budget=5000.0)
         assert orders == []
         assert any("broker" in r["reason"] for r in s.last_rejections)

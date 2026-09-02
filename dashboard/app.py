@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -13,9 +12,12 @@ import pandas as pd
 import plotly.graph_objects as go
 from dotenv import load_dotenv
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+_DASHBOARD_DIR = os.path.dirname(__file__)
+sys.path.insert(0, os.path.join(_DASHBOARD_DIR, ".."))
+sys.path.insert(0, _DASHBOARD_DIR)
 
-from src.core.alpaca_client import AlpacaClient
+from src.core.alpaca_client import AlpacaClient, load_config
+from src.core.account_identity import describe_broker_account
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.core.options_chain import OptionsChain
@@ -24,6 +26,11 @@ from src.strategies.csp import CashSecuredPutStrategy
 from src.strategies.sixfold_engine import SixfoldEngine
 from src.risk.allocation import AllocationManager, AllocationConfig
 from src.core.config import load_config
+from src.core.decision_log import count_trades_today
+from cockpit import render_decision_feed, render_live_agents, render_operator_future
+from books import render_journal_trades, render_sleeve_books
+from notifications import render_notifications
+from council import render_council
 
 load_dotenv()
 
@@ -38,7 +45,14 @@ ET = ZoneInfo("America/New_York")
 
 @st.cache_resource
 def get_client():
-    return AlpacaClient()
+    """Read-only Alpaca client. Never submit_order from this process."""
+    if os.environ.get("ALPACA_ENV") != "staging":
+        if not os.environ.get("ALPACA_STAGING_API_KEY"):
+            raise RuntimeError(
+                "Dashboard must run via ./scripts/run_staging.sh dashboard "
+                "(ALPACA_ENV=staging). Contest keys are not allowed here."
+            )
+    return AlpacaClient(config=load_config(staging=True), dry_run=True)
 
 
 @st.cache_resource
@@ -66,11 +80,48 @@ def get_sixfold():
     return SixfoldEngine(), FinancialDataProvider()
 
 
-def render_header(client: AlpacaClient):
+@st.fragment(run_every=5)
+def render_header():
+    client = get_client()
     st.title("ProductAdvisors -- AI Trading Agents")
 
     clock = client.get_clock()
+    account = client.get_account()
     et_now = datetime.now(ET).strftime("%H:%M:%S ET")
+
+    identity = describe_broker_account(
+        client.environment,
+        getattr(client, "key_prefix", ""),
+        str(getattr(account, "account_number", "") or ""),
+        paper=True,
+    )
+    if identity["tone"] == "ok":
+        bg, border, fg = "#ecfdf3", "#16a34a", "#14532d"
+    elif identity["tone"] == "danger":
+        bg, border, fg = "#fef2f2", "#dc2626", "#7f1d1d"
+    else:
+        bg, border, fg = "#fffbeb", "#d97706", "#78350f"
+
+    equity = float(getattr(account, "equity", 0) or 0)
+    last_equity = float(getattr(account, "last_equity", equity) or equity)
+    pct = ((equity - last_equity) / last_equity * 100) if last_equity else 0.0
+    pct_color = "#16a34a" if pct >= 0 else "#dc2626"
+
+    st.markdown(
+        f"<div style='border:1px solid {border};border-radius:10px;"
+        f"padding:12px 16px;background:{bg};color:{fg};margin-bottom:8px;'>"
+        f"<div style='display:flex;justify-content:space-between;align-items:baseline;'>"
+        f"<span style='font-weight:700;font-size:1.15rem'>{identity['headline']}</span>"
+        f"<span style='font-size:1.15rem'>${equity:,.2f}</span>"
+        f"</div>"
+        f"<div style='display:flex;justify-content:space-between;font-size:0.92rem;opacity:0.9;'>"
+        f"<span>{identity['detail']}</span>"
+        f"<span style='color:{pct_color}'>{pct:+.2f}%</span>"
+        f"</div></div>",
+        unsafe_allow_html=True,
+    )
+    if identity["tone"] == "danger":
+        st.error("Contest keys on the laptop dashboard. Stop. Use run_staging.sh.")
 
     if clock.is_open:
         status = "MARKET OPEN"
@@ -83,18 +134,23 @@ def render_header(client: AlpacaClient):
     st.markdown(
         f"<span style='color:{color}; font-weight:bold'>{status}</span>"
         f"&nbsp;&nbsp;|&nbsp;&nbsp;{et_now}"
-        f"&nbsp;&nbsp;|&nbsp;&nbsp;Alpaca Paper Account",
+        f"&nbsp;&nbsp;|&nbsp;&nbsp;dashboard dry-run (no orders from this process)",
         unsafe_allow_html=True,
     )
 
 
-def render_account(client: AlpacaClient, tracker: PositionTracker):
+@st.fragment(run_every=5)
+def render_account():
+    client = get_client()
     account = client.get_account()
-    snapshot = tracker.get_snapshot()
+    equity = float(account.equity)
+    last_equity = float(getattr(account, "last_equity", equity) or equity)
+    daily_pnl = equity - last_equity
+    trades = count_trades_today()
 
     col1, col2, col3, col4, col5 = st.columns(5)
     with col1:
-        st.metric("Equity", f"${float(account.equity):,.2f}", f"${snapshot.daily_pnl:+,.2f}")
+        st.metric("Equity", f"${equity:,.2f}", f"{daily_pnl:,.2f}")
     with col2:
         st.metric("Cash", f"${float(account.cash):,.2f}")
     with col3:
@@ -102,7 +158,7 @@ def render_account(client: AlpacaClient, tracker: PositionTracker):
     with col4:
         st.metric("Positions", len(client.get_positions()))
     with col5:
-        st.metric("Trades Today", tracker.trade_count_today)
+        st.metric("Trades Today", trades)
 
 
 def render_allocation(allocator: AllocationManager):
@@ -233,6 +289,7 @@ def render_csp_scanner(client: AlpacaClient, data_svc: MarketDataService):
     st.caption(f"{len(opps)} total opportunities | {len(affordable)} affordable (< $10K cash)")
 
 
+@st.fragment(run_every=5)
 def render_positions(client: AlpacaClient):
     positions = client.get_positions()
     if not positions:
@@ -265,6 +322,7 @@ def render_positions(client: AlpacaClient):
     st.caption(f"Total unrealized P&L: ${total_pnl:+,.2f}")
 
 
+@st.fragment(run_every=5)
 def render_orders(client: AlpacaClient):
     orders = client.get_orders("open")
     if not orders:
@@ -333,13 +391,7 @@ def render_trade_history(tracker: PositionTracker):
 
 
 def render_vampire_status():
-    """Read the live config rather than assert a fixed answer.
-
-    This was static markdown claiming SPY and QQQ were "Watching" with zero
-    P&L. Both facts had been false for days: the symbols are QQQ and TQQQ, and
-    the strategy is halted. A hardcoded status panel does not degrade when the
-    system changes, it just becomes wrong while still looking live.
-    """
+    """Read the live config rather than assert a fixed answer."""
     cfg = load_config()
     from src.strategies.vampire_engine import VampireConfig, VampireEngine
 
@@ -363,12 +415,7 @@ def render_vampire_status():
 
 
 def render_pendulum():
-    """Tashi's long-Treasury mean-reversion sleeve.
-
-    Shows the signal the engine will actually act on, computed by the same
-    decide() the live agent calls, so this panel cannot drift away from the
-    strategy it claims to describe.
-    """
+    """Tashi's long-Treasury mean-reversion sleeve."""
     cfg = load_config()
     if cfg.pendulum_pct <= 0:
         st.info("Pendulum is not allocated.")
@@ -515,20 +562,27 @@ def main():
     try:
         client = get_client()
         data_svc = get_data()
-        tracker = get_tracker()
         allocator = get_allocator()
     except Exception as e:
         st.error(f"Failed to connect to Alpaca: {e}")
-        st.info("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
+        st.info("Run ./scripts/run_staging.sh dashboard (staging keys only).")
         return
 
-    render_header(client)
+    render_header()
     st.divider()
-    render_account(client, tracker)
+    render_account()
     st.divider()
 
-    tab_overview, tab_sixfold, tab_scanner, tab_history = st.tabs([
-        "Live Overview", "SIXFOLD Analysis", "Options Scanner", "Trade History"
+    st.subheader("Live agents")
+    render_live_agents()
+    render_operator_future()
+    st.divider()
+    render_sleeve_books(client)
+    st.divider()
+
+    tab_overview, tab_council, tab_notif, tab_log, tab_sixfold, tab_scanner, tab_history = st.tabs([
+        "Live Overview", "AI Council", "Notifications", "Decision log",
+        "SIXFOLD Analysis", "Options Scanner", "Trade History",
     ])
 
     with tab_overview:
@@ -551,45 +605,71 @@ def main():
             st.subheader("Capital Allocation")
             render_allocation(allocator)
 
-            st.subheader("P&L by Strategy")
-            render_strategy_pnl(tracker)
+            st.caption(
+                "Per-agent budget, invested, and P&L is the Capital by agent "
+                "table above. The pie is broker usage, not the dashboard tracker."
+            )
+
+    with tab_council:
+        render_council(client, allocator, get_tracker())
+
+    with tab_notif:
+        st.subheader("Engine Notifications")
+        st.caption(
+            "Live feed from the ntfy topic the engine publishes to. "
+            "Auto-refreshes every 15 seconds."
+        )
+        render_notifications()
+
+    with tab_log:
+        st.subheader("Decision journal")
+        st.caption("Same file as `./scripts/run_staging.sh observe`.")
+        render_decision_feed()
 
     with tab_sixfold:
         st.subheader("SIXFOLD Equity Analysis")
         st.caption(
-            "Six independent lenses scoring securities on competitive advantage, "
-            "returns on capital, valuation, and insider signals. "
-            "Methodology by Tashi (ProductAdvisors)."
+            "On-demand scan. This hits yfinance and is slow; the live analyst "
+            "card is fed by the coordinator, not this button."
         )
-        render_sixfold_scanner()
+        if st.button("Run SIXFOLD scan"):
+            st.session_state["run_sixfold"] = True
+        if st.session_state.get("run_sixfold"):
+            render_sixfold_scanner()
+        else:
+            st.info("Click Run SIXFOLD scan when you want a manual universe score.")
 
     with tab_scanner:
         col_a, col_b = st.columns([3, 2])
 
         with col_a:
             st.subheader("CSP Opportunities")
-            st.caption("Puts the agent would sell when market opens. Ranked by composite score.")
-            render_csp_scanner(client, data_svc)
+            st.caption("On-demand. Live CSP/CC thoughts are on the Options income card.")
+            if st.button("Scan CSP chain"):
+                st.session_state["run_csp"] = True
+            if st.session_state.get("run_csp"):
+                render_csp_scanner(client, data_svc)
+            else:
+                st.info("Click Scan CSP chain to fetch option chains.")
 
         with col_b:
             st.subheader("Market Snapshot")
             st.caption("Latest quotes for watchlist symbols")
-            render_market_snapshot(data_svc)
+            if st.button("Refresh quotes"):
+                st.session_state["run_quotes"] = True
+            if st.session_state.get("run_quotes"):
+                render_market_snapshot(data_svc)
+            else:
+                st.info("Click Refresh quotes to pull the watchlist.")
 
     with tab_history:
-        st.subheader("Trade Log")
-        render_trade_history(tracker)
+        st.subheader("Fills by agent")
+        st.caption("Journal from the coordinator, not this dashboard process.")
+        render_journal_trades()
 
     st.divider()
-    col_r1, col_r2 = st.columns(2)
-    with col_r1:
-        if st.button("Refresh Now"):
-            st.rerun()
-    with col_r2:
-        auto = st.checkbox("Auto-refresh (15s)", value=False)
-        if auto:
-            time.sleep(15)
-            st.rerun()
+    if st.button("Refresh Now"):
+        st.rerun()
 
 
 if __name__ == "__main__":

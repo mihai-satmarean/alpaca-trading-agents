@@ -121,9 +121,8 @@ class TestTokenBudget:
     """A reasoning model spends tokens on hidden reasoning_content before it
     answers. At 700 max_tokens every reasoning-capable model tested against
     the real cluster returned content: null with finish_reason "length" -
-    not an error, so nothing upstream ever caught it. This cluster is
-    self-hosted with no per-token cost, so a small hardcoded budget was the
-    wrong economy. Confirmed live: 4000 tokens is enough for real content.
+    not an error, so nothing upstream ever caught it. Muting thinking was
+    the wrong fix; the budget was. Confirmed live: 4000 tokens is enough.
     """
 
     def _sent_body(self, monkeypatch, env=None):
@@ -161,6 +160,7 @@ class TestTokenBudget:
             "700 was consistently exhausted by hidden reasoning tokens alone; "
             "this must not regress back to a budget that size"
         )
+        assert "chat_template_kwargs" not in body
 
     def test_the_budget_is_tunable_without_a_code_change(self, monkeypatch):
         body = self._sent_body(monkeypatch, env={"NARRATOR_MAX_TOKENS": "9000"})

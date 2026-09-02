@@ -14,7 +14,10 @@ threshold stands instead of a derived one.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
+
+import pytest
 
 from src.agents.vampire import (
     MAX_SPREAD_FRACTION,
@@ -22,6 +25,17 @@ from src.agents.vampire import (
     SPREAD_MULTIPLE,
     VampireAgent,
 )
+
+
+@pytest.fixture(autouse=True)
+def _fast_sleep(monkeypatch):
+    async def instant(_delay=0):
+        return None
+    monkeypatch.setattr("src.agents.vampire.asyncio.sleep", instant)
+
+
+def _apply(a):
+    asyncio.run(a._apply_spread_thresholds())
 
 
 def _agent(quotes, configured=0.02):
@@ -47,35 +61,35 @@ def _agent(quotes, configured=0.02):
 class TestWideQuotesDoNotSetTheTrigger:
     def test_a_normal_book_still_derives_a_threshold(self):
         a, eng = _agent([(104.88, 104.92)])       # 4c on ~$105
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold == round(0.04 * SPREAD_MULTIPLE, 4)
 
     def test_the_hood_book_that_disabled_the_symbol_is_rejected(self):
         """$3.87 wide on $104. Previously produced a 9.675 trigger."""
         a, eng = _agent([(103.0, 106.87)], configured=0.05)
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold == 0.05, "configured value must stand"
 
     def test_it_never_produces_the_9_dollar_trigger(self):
         a, eng = _agent([(103.0, 106.87)], configured=0.05)
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold < 1.0
 
     def test_a_single_wide_read_is_discarded_not_the_whole_sample(self):
         """Four good reads and one blowout: use the four."""
         a, eng = _agent([(104.88, 104.92), (104.88, 104.92), (103.0, 106.87),
                          (104.88, 104.92), (104.88, 104.92)])
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold == round(0.04 * SPREAD_MULTIPLE, 4)
 
     def test_the_floor_still_binds_on_a_very_tight_book(self):
         """The dangerous direction stays guarded."""
         a, eng = _agent([(700.000, 700.001)])
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold == MIN_TICK_THRESHOLD
 
     def test_the_boundary_is_inclusive(self):
         price, spread = 100.0, 100.0 * MAX_SPREAD_FRACTION
         a, eng = _agent([(price - spread / 2, price + spread / 2)])
-        a._apply_spread_thresholds()
+        _apply(a)
         assert eng.cfg.tick_threshold == round(spread * SPREAD_MULTIPLE, 4)

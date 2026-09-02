@@ -362,7 +362,7 @@ class BullCallSpreadStrategy:
                 legs=legs,
             )
 
-            order = self._client.trading.submit_order(req)
+            order = self._client.submit_order(req)
 
             log.info(
                 "Bull call spread placed: %s long %s / short %s, "

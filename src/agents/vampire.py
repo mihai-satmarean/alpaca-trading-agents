@@ -14,12 +14,14 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.decision_log import record
 from src.core.market_data import MarketDataService, Quote
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationManager
 from src.risk.circuit_breakers import CircuitBreaker
 from src.strategies.vampire_engine import VampireConfig, VampireEngine, VampireState
 from src.strategies.vampire_symbol_picker import (
+    HARD_EXCLUDE,
     PickerConfig,
     VampireSymbolPicker,
 )
@@ -67,13 +69,14 @@ class VampireAgent:
         self._engines: dict[str, VampireEngine] = {}
         self._picker: VampireSymbolPicker | None = None
         self._last_health_check: float = 0.0
+        self._last_lineup: list[dict] = []
 
         if enable_picker:
             budget = allocator.get_budget().vampire_budget
             self._picker = VampireSymbolPicker(
                 client=client, data=data,
                 sleeve_budget=budget,
-                config=picker_config or PickerConfig(),
+                config=picker_config or PickerConfig(llm_hunt=True),
             )
 
         if symbols:
@@ -144,7 +147,7 @@ class VampireAgent:
                         continue
                 self._engines.pop(sym, None)
 
-    def _apply_spread_thresholds(self) -> None:
+    async def _apply_spread_thresholds(self) -> None:
         """Set each engine's trigger from its own spread, not a flat number.
 
         A round trip crosses the spread on entry and again on exit, so a fixed
@@ -170,7 +173,7 @@ class VampireAgent:
                             mids.append((bid + ask) / 2)
                 except Exception:
                     log.warning("quote read failed for %s", sym, exc_info=True)
-                time.sleep(0.2)
+                await asyncio.sleep(0.2)
             price = statistics.median(mids) if mids else 0.0
             if not spreads:
                 log.warning("no usable quotes for %s; keeping its configured threshold", sym)
@@ -243,10 +246,20 @@ class VampireAgent:
         """
         if self._picker is None:
             log.info("Picker disabled, keeping static symbols: %s", list(self._engines.keys()))
+            record(
+                "vampire_picker", "lineup",
+                thought="picker disabled; using static symbols",
+                decision="static",
+                symbols=list(self._engines.keys()),
+            )
             return list(self._engines.keys())
 
         try:
-            result = self._picker.pick()
+            keep = {
+                s for s, e in self._engines.items()
+                if e.daily_pnl > 0 and s.upper() not in HARD_EXCLUDE
+            }
+            result = self._picker.pick(keep_symbols=keep)
         except Exception:
             log.exception("Pre-market scan failed; keeping current symbols")
             return list(self._engines.keys())
@@ -259,6 +272,22 @@ class VampireAgent:
         new = set(result.symbols)
 
         for sym in old - new:
+            engine = self._engines.get(sym)
+            # Staging 2026-09-01: a hunt veto of the whole universe would have
+            # rotated QQQ out. QQQ was the only scalper name with a believable
+            # session edge. Names the engine has already made money on stay.
+            # HOOD/SPY are excluded even if the ledger claims a profit: that
+            # number was a lot-accounting lie.
+            if (
+                engine is not None
+                and engine.daily_pnl > 0
+                and sym.upper() not in HARD_EXCLUDE
+            ):
+                log.info(
+                    "Keeping %s through picker rotation (session edge $%.2f)",
+                    sym, engine.daily_pnl,
+                )
+                continue
             engine = self._engines.pop(sym, None)
             if engine:
                 try:
@@ -275,9 +304,28 @@ class VampireAgent:
 
         self._symbols = list(self._engines.keys())
         log.info("Post-scan lineup: %s", self._symbols)
+        lineup = []
+        for sym in result.symbols:
+            metrics = result.metrics.get(sym)
+            budget = result.bleed_budgets.get(sym)
+            lineup.append({
+                "symbol": sym,
+                "score": None if metrics is None else round(metrics.score, 4),
+                "spread": None if metrics is None else round(metrics.spread, 4),
+                "atr_pct": None if metrics is None else round(metrics.atr_pct, 4),
+                "profit_target": None if budget is None else budget.profit_target,
+                "loss_limit": None if budget is None else budget.loss_limit,
+            })
+        record(
+            "vampire_picker", "lineup",
+            thought=f"selected {result.symbols}",
+            decision="hunt",
+            lineup=lineup,
+        )
+        self._last_lineup = lineup
         return self._symbols
 
-    def check_and_rotate(self) -> list[dict]:
+    async def check_and_rotate(self) -> list[dict]:
         """Mid-session health check: retire exhausted symbols, add replacements.
 
         Called periodically during the session (every HEALTH_CHECK_INTERVAL seconds).
@@ -307,6 +355,7 @@ class VampireAgent:
 
             self._picker.retire_symbol(sym, reason)
             events.append({"action": "retire", "symbol": sym, "reason": reason})
+            record("vampire_picker", "rotate", symbol=sym, thought=reason, decision="retire")
 
         if retirements:
             current = [s for s in self._engines if self._engines[s].state != VampireState.STOPPED]
@@ -317,9 +366,14 @@ class VampireAgent:
                 engine = VampireEngine(self._client, self._data, self._tracker, cfg)
                 self._engines[sym] = engine
 
-                self._calibrate_single(sym, engine)
+                await self._calibrate_single(sym, engine)
                 events.append({"action": "add", "symbol": sym, "reason": "replacement"})
                 log.info("Fresh victim: %s replaces retired symbol", sym)
+                record(
+                    "vampire_picker", "rotate",
+                    symbol=sym, thought="replacement for a retired symbol",
+                    decision="add",
+                )
 
             for retired_sym, _ in retirements:
                 if retired_sym in self._engines and self._engines[retired_sym].state == VampireState.STOPPED:
@@ -330,7 +384,7 @@ class VampireAgent:
 
         return events
 
-    def _calibrate_single(self, sym: str, engine: VampireEngine) -> None:
+    async def _calibrate_single(self, sym: str, engine: VampireEngine) -> None:
         """Apply spread threshold to a single engine (used for mid-session replacements)."""
         spreads: list[float] = []
         mids: list[float] = []
@@ -345,7 +399,7 @@ class VampireAgent:
                         mids.append((bid + ask) / 2)
             except Exception:
                 pass
-            time.sleep(0.2)
+            await asyncio.sleep(0.2)
 
         price = statistics.median(mids) if mids else 0.0
         if not spreads:
@@ -389,8 +443,20 @@ class VampireAgent:
                 "net_position": engine.net_position,
                 "daily_pnl": engine.daily_pnl,
                 "bleed_count": len(engine.bleeds),
+                "threshold": engine.cfg.tick_threshold,
+                "last_thought": getattr(engine, "last_thought", {}),
             }
         return status
+
+    def picker_status(self) -> dict:
+        hunts = list(getattr(self._picker, "last_hunts", []) or []) if self._picker else []
+        return {
+            "enabled": self._picker is not None,
+            "llm_hunt": bool(self._picker and self._picker.cfg.llm_hunt),
+            "symbols": list(self._engines.keys()),
+            "lineup": list(self._last_lineup),
+            "hunts": hunts,
+        }
 
     async def run(self):
         """Subscribe all symbols on one stream and dispatch to engines."""
@@ -409,7 +475,7 @@ class VampireAgent:
         self.run_pre_market_scan()
         self._apply_sleeve_limits()
         self._drop_unshortable()
-        self._apply_spread_thresholds()
+        await self._apply_spread_thresholds()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)
@@ -420,7 +486,7 @@ class VampireAgent:
                 vwap = self._data.get_vwap(quote.symbol, engine.cfg.bleed_window_seconds)
                 engine.tick(quote.mid, vwap)
 
-            self.check_and_rotate()
+            await self.check_and_rotate()
 
         await self._data.subscribe_quotes(all_symbols, on_quote)
         await self._data.subscribe_trades(all_symbols, lambda _: asyncio.sleep(0))

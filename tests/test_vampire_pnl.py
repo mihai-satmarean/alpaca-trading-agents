@@ -102,6 +102,29 @@ class TestRealizedPnl:
         assert e.avg_entry is None
 
 
+class TestSideFlipDoesNotInventPnl:
+    def test_overfill_through_zero_resets_the_basis(self):
+        """The HOOD +$10k-on-5-shares lie: a cover that filled more than the
+        short flipped the signed qty while keeping the old average."""
+        e = _engine()
+        e.tick(500.10, vwap=500.00)          # short 10 @ 500.10
+        assert e.net_position == -10
+        e._submit = lambda qty, price, side: 20   # cover 10 and flip long 10
+        e.tick(499.50, vwap=500.10)
+        assert e.net_position == 10
+        assert e.avg_entry == pytest.approx(499.50)
+        # Closed the 10-share short for +6.00; the new long has no realized P&L.
+        assert e.daily_pnl == pytest.approx(6.00)
+        assert abs(e.daily_pnl) < 100
+
+    def test_opposite_side_open_does_not_blend_averages(self):
+        e = _engine()
+        e._net_position = 5
+        e._avg_entry = 100.0
+        e._open_lot(5, 90.0, long=False)
+        assert e.avg_entry == pytest.approx(90.0)
+
+
 class TestMarkToMarket:
     def test_unrealized_is_signed_correctly_for_a_long(self):
         e = _engine()

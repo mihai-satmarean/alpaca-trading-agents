@@ -51,6 +51,8 @@ def _exec(candidates=("JPM",), price=200.0, positions=None, sleeve=50_000.0,
     breaker.can_trade.return_value = can_trade
     breaker.limits = MagicMock(max_single_trade_pct=0.05)
     analyst.get_buy_candidates.return_value = list(candidates)
+    analyst.get_disposal_candidates.return_value = []
+    analyst.scores = {}
     ex = SixfoldExecutor(client, data, tracker, breaker, allocator, analyst,
                          excluded=set(excluded))
     return ex, client
@@ -62,7 +64,7 @@ class TestItActuallyTrades:
         ex, client = _exec(["JPM"], price=200.0)
         result = ex.run_cycle()
         assert result["status"] == "ok" and len(result["orders"]) == 1
-        client.trading.submit_order.assert_called_once()
+        client.submit_order.assert_called_once()
 
     def test_size_is_the_sleeve_split_capped_by_the_per_trade_limit(self, _m):
         """$50k over 10 names is $5,000; the 5% cap on $100k is also $5,000."""
@@ -77,7 +79,7 @@ class TestItActuallyTrades:
     def test_orders_are_limit_not_market(self, _m):
         ex, client = _exec(["JPM"], price=200.0)
         ex.run_cycle()
-        req = client.trading.submit_order.call_args[0][0]
+        req = client.submit_order.call_args[0][0]
         assert req.limit_price is not None and req.limit_price >= 200.0
 
     def test_several_candidates_all_trade_within_the_sleeve(self, _m):
@@ -92,12 +94,12 @@ class TestGatesApply:
     def test_a_tripped_breaker_stops_everything(self, _m):
         ex, client = _exec(breaker_ok=False)
         assert ex.run_cycle()["status"] == "breaker_active"
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
     def test_the_per_trade_limit_is_consulted(self, _m):
         ex, client = _exec(can_trade=False)
         assert ex.run_cycle()["orders"] == []
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
     def test_the_sleeve_budget_bounds_total_exposure(self, _m):
         ex, _ = _exec(["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L"],
@@ -129,12 +131,12 @@ class TestGatesApply:
         ex, client = _exec(["JPM"])
         ex._data.get_latest_quote.return_value = None
         assert ex.run_cycle()["orders"] == []
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
     def test_zero_sleeve_trades_nothing(self, _m):
         ex, client = _exec(sleeve=0.0)
         assert ex.run_cycle()["status"] == "no_sleeve"
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
 
 @patch(COUNCIL_PATCH, side_effect=_council_approve)
@@ -143,11 +145,11 @@ class TestFailureIsSafe:
         ex, client = _exec()
         ex._analyst.get_buy_candidates.side_effect = RuntimeError("yfinance down")
         assert ex.run_cycle()["status"] == "analyst_error"
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
 
     def test_a_broker_rejection_is_recorded_and_the_cycle_continues(self, _m):
         ex, client = _exec(["JPM", "V"], price=100.0)
-        client.trading.submit_order.side_effect = [RuntimeError("rejected"), MagicMock(id="2")]
+        client.submit_order.side_effect = [RuntimeError("rejected"), MagicMock(id="2")]
         result = ex.run_cycle()
         assert len(result["orders"]) == 1
         assert any("broker" in r["reason"] for r in ex.last_rejections)
@@ -164,7 +166,7 @@ class TestCouncilVeto:
         ex, client = _exec(["JPM"], price=200.0)
         result = ex.run_cycle()
         assert result["orders"] == []
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
         assert any("Council rejected" in r["reason"] for r in ex.last_rejections)
 
     def test_council_rejection_logs_advisor_reasons(self, _m):
@@ -198,7 +200,7 @@ class TestTheConcurrencyLimitCountsOnlyThisSleeve:
         assert len(result["orders"]) == 1, (
             f"expected KO to be bought; rejections were {ex.last_rejections}"
         )
-        client.trading.submit_order.assert_called_once()
+        client.submit_order.assert_called_once()
 
     def test_the_limit_still_binds_on_this_sleeves_own_positions(self, _m):
         """The guard must still work: 10 owned means no room for an 11th."""
@@ -206,5 +208,29 @@ class TestTheConcurrencyLimitCountsOnlyThisSleeve:
         ex, client = _exec(["KO"], price=100.0, positions=held,
                            excluded=("SPY", "QQQ"), sleeve=200_000.0)
         ex.run_cycle()
-        client.trading.submit_order.assert_not_called()
+        client.submit_order.assert_not_called()
         assert any("position limit" in r["reason"] for r in ex.last_rejections)
+
+
+@patch(COUNCIL_PATCH, side_effect=_council_approve)
+class TestInFlightOrdersAreNotDoubled:
+    def test_a_second_cycle_does_not_rebuy_before_the_broker_shows_the_fill(self, _m):
+        """Staging 2026-09-01: 59 submits of the same 8 names while positions
+        in the coordinator snapshot were still 0."""
+        ex, client = _exec(["JPM"], price=200.0)
+        first = ex.run_cycle()
+        assert len(first["orders"]) == 1
+        second = ex.run_cycle()
+        assert second["orders"] == []
+        assert client.submit_order.call_count == 1
+        assert any("in-flight" in r["reason"] for r in ex.last_rejections)
+
+    def test_in_flight_clears_once_the_position_is_visible(self, _m):
+        ex, client = _exec(["JPM"], price=200.0)
+        ex.run_cycle()
+        ex._tracker.get_snapshot.return_value = MagicMock(
+            equity=100_000.0, positions={"JPM": {"market_value": 5_000.0}},
+        )
+        ex.run_cycle()
+        assert client.submit_order.call_count == 1
+        assert any("already held" in r["reason"] for r in ex.last_rejections)

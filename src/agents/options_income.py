@@ -9,6 +9,7 @@ from datetime import datetime, time as dt_time
 from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.decision_log import record
 from src.core.market_data import MarketDataService
 from src.core.mcp_client import AlpacaMCPClient
 from src.core.option_quotes import mcp_quote_provider
@@ -65,10 +66,14 @@ class OptionsIncomeAgent:
         scanner refuses to price a contract it cannot quote, so a broken MCP
         path costs us trades instead of producing blind ones.
         """
-        key = os.environ.get("ALPACA_API_KEY")
-        secret = os.environ.get("ALPACA_SECRET_KEY")
+        if os.environ.get("ALPACA_ENV") == "staging":
+            key = os.environ.get("ALPACA_STAGING_API_KEY") or os.environ.get("ALPACA_API_KEY")
+            secret = os.environ.get("ALPACA_STAGING_SECRET_KEY") or os.environ.get("ALPACA_SECRET_KEY")
+        else:
+            key = os.environ.get("ALPACA_API_KEY")
+            secret = os.environ.get("ALPACA_SECRET_KEY")
         if not key or not secret:
-            log.error("ALPACA_API_KEY/SECRET_KEY unset; CSP scanning disabled")
+            log.error("Alpaca keys unset; CSP scanning disabled")
             return None
         try:
             self._mcp = AlpacaMCPClient(key, secret, paper=True)
@@ -89,11 +94,18 @@ class OptionsIncomeAgent:
         """Execute one scan-and-trade cycle. Returns summary of actions taken."""
         if not self._breaker.check():
             log.warning("Circuit breaker active, skipping options cycle")
+            record("options", "cycle", thought=self._breaker.trip_reason or "breaker",
+                   decision="breaker_active")
             return {"status": "breaker_active", "reason": self._breaker.trip_reason}
 
         budget = self._allocator.get_budget()
         if budget.options_available < 1000:
             log.info("Insufficient options budget ($%.0f), skipping", budget.options_available)
+            record(
+                "options", "cycle",
+                thought=f"options_available=${budget.options_available:.0f}",
+                decision="insufficient_budget",
+            )
             return {"status": "insufficient_budget", "available": budget.options_available}
 
         results = {"csp_trades": [], "cc_trades": [], "status": "ok"}
@@ -113,6 +125,14 @@ class OptionsIncomeAgent:
             len(cc_trades),
         )
         self.last_cycle = results
+        record(
+            "options", "cycle",
+            thought=f"{len(csp_trades)} CSP, {len(cc_trades)} CC",
+            decision=results["status"],
+            csp=csp_trades,
+            cc=cc_trades,
+            rejections=list(getattr(self._csp, "last_rejections", []) or []),
+        )
         return results
 
     def _is_market_open(self) -> bool:
@@ -137,4 +157,5 @@ class OptionsIncomeAgent:
             else:
                 log.debug("Market closed, sleeping")
 
-            time.sleep(SCAN_INTERVAL)
+            interval = 60 if getattr(self._alpaca, "is_dry_run", False) else SCAN_INTERVAL
+            time.sleep(interval)

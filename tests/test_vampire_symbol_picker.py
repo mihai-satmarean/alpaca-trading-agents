@@ -368,3 +368,20 @@ class TestStarvationFloor:
         )
         retirements = picker.check_health({"SPY": engine})
         assert not picker.is_fasting
+
+
+class TestHardExclude:
+    def test_hood_and_spy_are_not_in_the_default_universe(self):
+        from src.strategies.vampire_symbol_picker import HARD_EXCLUDE
+        picker = _mock_picker()
+        assert "HOOD" not in picker._universe
+        assert "SPY" not in picker._universe
+        assert HARD_EXCLUDE == frozenset({"HOOD", "SPY"})
+
+    def test_replacements_skip_hood_even_when_it_ranks_first(self):
+        picker = _mock_picker()
+        picker._all_metrics = {
+            "HOOD": SymbolMetrics(symbol="HOOD", score=0.01, shortable=True),
+            "AMD": SymbolMetrics(symbol="AMD", score=0.50, shortable=True),
+        }
+        assert picker.find_replacements(["QQQ"], count=1) == ["AMD"]

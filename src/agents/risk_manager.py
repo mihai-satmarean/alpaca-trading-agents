@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 from src.core.config import get_config
+from src.core.decision_log import record, record_throttled
 from src.core.position_tracker import PositionTracker
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
 from src.risk.allocation import AllocationManager, parse_occ
@@ -141,6 +142,11 @@ class RiskManagerAgent:
                 "timestamp": datetime.now().isoformat(),
             })
             log.info("EOD: flattened intraday sleeve %s", closed or "(nothing open)")
+            record(
+                "risk", "flatten",
+                thought=f"intraday sleeve {closed or '(nothing open)'}",
+                decision="eod",
+            )
         except Exception:
             log.exception("Intraday flatten failed")
         return closed
@@ -167,6 +173,14 @@ class RiskManagerAgent:
                 report = self.check()
                 if not report["trading_allowed"]:
                     log.warning("Trading halted: %s", report["alerts"])
+                    msgs = "; ".join(a.get("message", "") for a in report["alerts"])
+                    record("risk", "halt", thought=msgs, decision="halt")
+                elif report["alerts"]:
+                    msgs = "; ".join(a.get("message", "") for a in report["alerts"])
+                    record_throttled(
+                        "risk:alerts", 30, "risk", "check",
+                        thought=msgs, decision="watch",
+                    )
 
                 if self.should_flatten_eod():
                     self.flatten_intraday()

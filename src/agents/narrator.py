@@ -125,10 +125,9 @@ def _chat(system: str, user: str) -> str:
     # against the real endpoint with the production prompt: at 700 tokens
     # every reasoning-capable model tested returned null; at 4000 all of
     # them (dell4-chat 12.5s, dell4-finance 2.0s, dell4-qwen38 34.5s)
-    # returned real content with finish_reason "stop". This cluster is
-    # self-hosted with no per-token cost, so the budget was the wrong
-    # thing to economize - NARRATOR_MAX_TOKENS is generous by default and
-    # left tunable rather than hardcoded again.
+    # returned real content with finish_reason "stop". Muting thinking
+    # was the wrong fix; the budget was. NARRATOR_MAX_TOKENS is generous
+    # by default and left tunable rather than hardcoded again.
     max_tokens = int(os.environ.get("NARRATOR_MAX_TOKENS", "4000"))
 
     body = json.dumps({
@@ -145,7 +144,8 @@ def _chat(system: str, user: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         payload = json.load(r)
-    return payload["choices"][0]["message"]["content"]
+    message = ((payload.get("choices") or [{}])[0].get("message") or {})
+    return message.get("content") or message.get("reasoning_content") or ""
 
 
 def _run(system: str, user: str, what: str) -> str | None:

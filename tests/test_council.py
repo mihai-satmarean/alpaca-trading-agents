@@ -67,6 +67,155 @@ class TestParseVerdict:
         assert _parse_verdict("approve. Looks good.", "APPROVE", "REJECT") == "approve"
 
 
+class TestThinkingTraceDoesNotMuteTheVote:
+    def test_fino1_thinking_header_is_not_an_abstention(self):
+        from src.core.finance_advisor import _answer_for_verdict
+        text = (
+            "## Thinking\n"
+            "I almost want to REJECT because of gap risk on a trend day.\n\n"
+            "## Answer\n"
+            "APPROVE. Tight book, shortable, two-sided noise."
+        )
+        assert _parse_verdict(_answer_for_verdict(text), "APPROVE", "REJECT") == "approve"
+
+    def test_answer_wins_when_the_scratchpad_said_the_opposite(self):
+        from src.core.finance_advisor import _answer_for_verdict
+        text = (
+            "## Thinking\nAPPROVE looks tempting.\n\n"
+            "## Answer\nREJECT. Earnings inside the DTE."
+        )
+        assert _parse_verdict(_answer_for_verdict(text), "APPROVE", "REJECT") == "reject"
+
+    def test_think_tags_are_stripped(self):
+        from src.core.finance_advisor import _answer_for_verdict
+        text = "<think>REJECT this maybe</think>\nAPPROVE. Premium covers the risk."
+        assert _parse_verdict(_answer_for_verdict(text), "APPROVE", "REJECT") == "approve"
+
+    def test_query_advisor_keeps_the_thinking_in_the_journal(self):
+        from src.core.finance_advisor import _query_advisor
+        thinking = (
+            "## Thinking\nI weigh assignment risk.\n\n"
+            "## Answer\nAPPROVE. Yield compensates."
+        )
+        with patch("src.core.finance_advisor._llm_call", return_value=thinking):
+            op = _query_advisor("dell4-fino1-14b", "Financial Reasoner",
+                                "sys", "prompt", "APPROVE", "REJECT")
+        assert op.verdict == "approve"
+        assert "## Thinking" in op.reasoning
+
+    def test_thinking_only_fino1_vote_on_the_last_line_is_not_an_abstention(self):
+        """Staging 2026-09-01: Fino1 never emitted ## Answer. 63/63 abstained
+        because the parser only read the first 80 characters of ## Thinking."""
+        from src.core.finance_advisor import _answer_for_verdict
+        text = (
+            "## Thinking\n"
+            "Alright, let's dive into this. We're looking at NVIDIA, which has "
+            "a SIXFOLD composite score of 78.5 out of 100. That's pretty solid.\n"
+            "I almost want to REJECT because growth stocks can gap.\n"
+            "APPROVE. Score and liquidity both fit a buy."
+        )
+        assert _parse_verdict(_answer_for_verdict(text), "APPROVE", "REJECT") == "approve"
+
+    def test_thinking_only_with_no_vote_word_still_abstains(self):
+        from src.core.finance_advisor import _answer_for_verdict
+        text = (
+            "## Thinking\n"
+            "Alright, let's dive into this. We're looking at NVIDIA, which has "
+            "a SIXFOLD composite score of 78.5 out of 100. That's pretty solid."
+        )
+        assert _parse_verdict(_answer_for_verdict(text), "APPROVE", "REJECT") == "abstain"
+
+
+class TestFino1IsAllowedToThink:
+    def test_fino1_sends_thinking_on_and_a_larger_budget(self, monkeypatch):
+        import json
+        import urllib.request
+        import src.core.finance_advisor as fa
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {
+                        "content": "APPROVE. Tight book.",
+                        "reasoning_content": "weighing spread vs ATR",
+                    }}]
+                }).encode()
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data)
+            captured["timeout"] = timeout
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        text = fa._llm_call("dell4-fino1-14b", "sys", "user")
+        assert captured["body"]["chat_template_kwargs"]["enable_thinking"] is True
+        assert captured["body"]["max_tokens"] >= 2000
+        assert captured["timeout"] >= 45
+        assert "weighing spread vs ATR" in text
+        assert "APPROVE" in text
+
+    def test_qwen_keeps_thinking_off(self, monkeypatch):
+        import json
+        import urllib.request
+        import src.core.finance_advisor as fa
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {"content": "APPROVE. Ok."}}]
+                }).encode()
+
+        def fake_urlopen(req, timeout=None, context=None):
+            captured["body"] = json.loads(req.data)
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        fa._llm_call("dell4-chat", "sys", "user")
+        assert captured["body"]["chat_template_kwargs"]["enable_thinking"] is False
+        assert captured["body"]["max_tokens"] >= 2000
+
+    def test_empty_content_falls_back_to_reasoning_content(self, monkeypatch):
+        import json
+        import urllib.request
+        import src.core.finance_advisor as fa
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {
+                        "content": None,
+                        "reasoning_content": "APPROVE. Hidden answer.",
+                    }}]
+                }).encode()
+
+        monkeypatch.setattr(urllib.request, "urlopen",
+                            lambda *a, **k: _Resp())
+        text = fa._llm_call("dell4-fino1-14b", "sys", "user")
+        assert "APPROVE" in text
+
+
 class TestCouncilDecision:
     def test_approved_when_unanimous(self):
         d = CouncilDecision(

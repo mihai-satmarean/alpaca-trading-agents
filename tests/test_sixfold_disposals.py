@@ -165,7 +165,10 @@ class TestOrderingAndGating:
                            scores={"JPM": _score(39.0), "KO": _score(66.0)})
         calls = []
         client.close_position.side_effect = lambda s: calls.append(("sell", s))
-        client.trading.submit_order.side_effect = lambda r: calls.append(("buy", r.symbol))
+        def _buy(req):
+            calls.append(("buy", req.symbol))
+            return MagicMock(id="1")
+        client.submit_order.side_effect = _buy
         ex.run_cycle()
         assert calls[0][0] == "sell" and any(c[0] == "buy" for c in calls)
 

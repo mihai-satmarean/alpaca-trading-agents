@@ -86,6 +86,7 @@ class AlpacaClient:
         cfg = config or load_config()
         self._dry_run = dry_run
         self._environment = cfg.environment
+        self._key_prefix = (cfg.api_key or "")[:6]
         self.trading = TradingClient(
             api_key=cfg.api_key,
             secret_key=cfg.secret_key,
@@ -109,6 +110,11 @@ class AlpacaClient:
     @property
     def environment(self) -> str:
         return self._environment
+
+    @property
+    def key_prefix(self) -> str:
+        """First six characters of the API key. Enough to tell staging from contest."""
+        return self._key_prefix
 
     def get_account(self):
         return self.trading.get_account()
@@ -184,6 +190,29 @@ class AlpacaClient:
             return _dry_run_order(symbol, qty, side, "limit", limit_price)
         return self.trading.submit_order(req)
 
+    def submit_order(self, req):
+        """Submit any order request, honoring dry-run.
+
+        Strategies that build LimitOrderRequest / MLEG requests must come
+        through here. Calling ``self.trading.submit_order`` bypasses dry-run.
+        """
+        if self._dry_run:
+            symbol = getattr(req, "symbol", None) or "?"
+            qty = getattr(req, "qty", 0) or 0
+            side = getattr(req, "side", OrderSide.BUY)
+            limit = getattr(req, "limit_price", None)
+            oclass = getattr(req, "order_class", None)
+            log.info(
+                "[DRY-RUN] submit_order %s %s qty=%s limit=%s class=%s",
+                side, symbol, qty, limit, oclass,
+            )
+            kind = "limit" if limit is not None else "market"
+            return _dry_run_order(
+                str(symbol), float(qty), side, kind,
+                float(limit) if limit is not None else None,
+            )
+        return self.trading.submit_order(req)
+
     def close_position(self, symbol: str):
         if self._dry_run:
             log.info("[DRY-RUN] close_position %s", symbol)
@@ -212,11 +241,25 @@ class AlpacaClient:
         return self.trading.get_clock()
 
 
+class DryRunOrder(dict):
+    """Dict that also supports attribute access so engines and tests both work."""
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as exc:
+            raise AttributeError(name) from exc
+
+
 def _dry_run_order(symbol: str, qty: float, side: OrderSide,
-                   order_type: str, limit_price: float | None = None) -> dict:
-    """Return a fake order dict for dry-run mode."""
+                   order_type: str, limit_price: float | None = None) -> DryRunOrder:
+    """Return a fake order for dry-run mode.
+
+    ``filled_qty`` is the requested qty so the scalper treats the would-be
+    fill as complete instead of polling a UUID the broker never saw.
+    """
     import uuid
-    return {
+    return DryRunOrder({
         "id": str(uuid.uuid4()),
         "symbol": symbol,
         "qty": str(qty),
@@ -224,5 +267,5 @@ def _dry_run_order(symbol: str, qty: float, side: OrderSide,
         "type": order_type,
         "limit_price": str(limit_price) if limit_price else None,
         "status": "dry_run",
-        "filled_qty": "0",
-    }
+        "filled_qty": str(qty),
+    })

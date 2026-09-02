@@ -34,15 +34,21 @@ log = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
 UNIVERSE = frozenset([
-    "SPY", "QQQ", "IWM", "DIA",
+    "QQQ", "IWM", "DIA",
     "TQQQ", "SQQQ",
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
     "AMD", "INTC", "CRM", "ORCL",
     "JPM", "BAC", "GS",
     "XLK", "XLF", "XLE", "XLV", "XLI",
     "NFLX", "PYPL", "UBER", "SQ", "COIN",
-    "HOOD", "RIVN", "SOFI",
+    "RIVN", "SOFI",
 ])
+
+# Measured 2026-09-01 on both contest and staging books: HOOD and SPY lost
+# money as scalper names (contest HOOD -$568 / 2,740 fills; staging HOOD
+# engine P&L was a lot-accounting lie). QQQ was the only believable edge.
+# They stay out of the hunt even when ATR/spread ranks them first.
+HARD_EXCLUDE = frozenset({"HOOD", "SPY"})
 
 
 @dataclass
@@ -127,6 +133,11 @@ class PickerConfig:
     # tick before closing them. This prevents panic-selling at the worst price.
     fasting_mode: bool = True
 
+    # Hunt LLM is off by default so unit tests stay offline. VampireAgent
+    # turns it on. Ticks never call this; only pick() and find_replacements().
+    llm_hunt: bool = False
+    max_hunt_probes: int = 12
+
 
 @dataclass
 class SelectionResult:
@@ -150,6 +161,9 @@ class VampireSymbolPicker:
         self._data = data
         self._sleeve_budget = sleeve_budget
         self._universe = universe or UNIVERSE
+        self._universe = frozenset(
+            s.upper() for s in self._universe if s.upper() not in HARD_EXCLUDE
+        )
         self.cfg = config or PickerConfig()
 
         self._all_metrics: dict[str, SymbolMetrics] = {}
@@ -158,6 +172,7 @@ class VampireSymbolPicker:
         self._last_scan: datetime | None = None
         self._is_fasting: bool = False
         self._session_pnl: float = 0.0
+        self.last_hunts: list[dict] = []
 
     @property
     def bleed_budgets(self) -> dict[str, BleedBudget]:
@@ -173,14 +188,16 @@ class VampireSymbolPicker:
         """Dollar amount of loss that triggers fasting mode."""
         return self._sleeve_budget * self.cfg.starvation_floor_pct
 
-    def pick(self) -> SelectionResult:
+    def pick(self, keep_symbols: set[str] | None = None) -> SelectionResult:
         """Run the full pre-market scan and return top symbols with budgets."""
         log.info("VampireSymbolPicker: scanning %d candidates", len(self._universe))
 
         raw = self._collect_metrics(self._universe)
         passed = self._apply_hard_filters(raw)
         scored = self._score_all(passed)
-        selected = sorted(scored, key=lambda m: m.score)[:self.cfg.target_count]
+        ranked = sorted(scored, key=lambda m: m.score)
+        selected = self._hunt_filter(ranked, self.cfg.target_count,
+                                     keep_symbols=keep_symbols)
 
         symbols = [m.symbol for m in selected]
         budgets = self._assign_bleed_budgets(selected)
@@ -295,12 +312,17 @@ class VampireSymbolPicker:
 
         candidates = [
             m for m in self._all_metrics.values()
-            if m.symbol.upper() not in excluded and m.shortable and m.score < float("inf")
+            if m.symbol.upper() not in excluded
+            and m.symbol.upper() not in HARD_EXCLUDE
+            and m.shortable and m.score < float("inf")
         ]
         candidates.sort(key=lambda m: m.score)
+        chosen = self._hunt_filter(candidates, count)
 
         replacements = []
-        for m in candidates[:count]:
+        for m in chosen:
+            if m.symbol.upper() in HARD_EXCLUDE:
+                continue
             replacements.append(m.symbol)
             budget = self._make_budget(m)
             self._bleed_budgets[m.symbol] = budget
@@ -311,6 +333,32 @@ class VampireSymbolPicker:
             )
 
         return replacements
+
+    def _hunt_filter(
+        self,
+        ranked: list[SymbolMetrics],
+        count: int,
+        keep_symbols: set[str] | None = None,
+    ) -> list[SymbolMetrics]:
+        from src.core.hunt_advisor import filter_hunt_candidates
+
+        before = [m.symbol for m in ranked[:count]]
+        chosen = filter_hunt_candidates(
+            ranked,
+            count=count,
+            enabled=self.cfg.llm_hunt,
+            max_probes=self.cfg.max_hunt_probes,
+            keep_symbols=keep_symbols,
+        )
+        self.last_hunts = [
+            {"symbol": m.symbol, "score": round(m.score, 3)} for m in chosen
+        ]
+        if self.cfg.llm_hunt and before != [m.symbol for m in chosen]:
+            log.info(
+                "Vampire hunt LLM lineup %s -> %s",
+                before, [m.symbol for m in chosen],
+            )
+        return chosen
 
     def retire_symbol(self, symbol: str, reason: str) -> None:
         """Mark a symbol as retired so the cooldown applies."""

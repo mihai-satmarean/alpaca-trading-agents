@@ -18,6 +18,7 @@ from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
 from src.core.finance_advisor import evaluate_equity_buy
+from src.core.decision_log import record
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +52,11 @@ class SixfoldExecutor:
         self._max_concurrent = max_concurrent
         self.last_orders: list[dict] = []
         self.last_rejections: list[dict] = []
+        # Staging 2026-09-01: 59 buy submits of the same names while the
+        # coordinator snapshot still showed positions=0. A fill is not visible
+        # to _held() until the next broker refresh, so a second cycle bought
+        # again. Names with a live order this session are treated as held.
+        self._in_flight: set[str] = set()
 
     def _held(self) -> dict[str, float]:
         snap = self._tracker.get_snapshot()
@@ -168,6 +174,7 @@ class SixfoldExecutor:
             return {"status": "analyst_error", "orders": [], "disposals": disposed}
 
         held = self._held()
+        self._in_flight -= {s for s in list(self._in_flight) if s in held}
         # Count only this sleeve's own positions against its concurrency
         # limit. _held() returns every equity position in the account, so
         # counting it raw let the scalper's 2-4 open names consume SIXFOLD's
@@ -177,6 +184,7 @@ class SixfoldExecutor:
         # committed() already draws this boundary for dollars; the count has
         # to draw the same one.
         own_held = {k for k in held if k not in self._excluded}
+        own_pending = {s for s in self._in_flight if s not in self._excluded}
         budget_each = self.position_budget()
         room = sleeve - self.committed()
         placed: list[dict] = []
@@ -189,7 +197,10 @@ class SixfoldExecutor:
             if sym in held:
                 self._reject(sym, "already held")
                 continue
-            if len(placed) + len(own_held) >= self._max_concurrent:
+            if sym in self._in_flight:
+                self._reject(sym, "in-flight order this session")
+                continue
+            if len(placed) + len(own_held) + len(own_pending) >= self._max_concurrent:
                 self._reject(sym, f"at the {self._max_concurrent}-position limit")
                 continue
 
@@ -232,7 +243,7 @@ class SixfoldExecutor:
 
             limit = round(quote * (1 + LIMIT_SLIPPAGE), 2)
             try:
-                order = self._client.trading.submit_order(
+                order = self._client.submit_order(
                     LimitOrderRequest(symbol=sym, qty=qty, side=OrderSide.BUY,
                                       time_in_force=TimeInForce.DAY, limit_price=limit)
                 )
@@ -253,9 +264,20 @@ class SixfoldExecutor:
                      "council": council_detail}
             placed.append(entry)
             self.last_orders.append(entry)
+            self._in_flight.add(sym)
+            own_pending.add(sym)
             self._tracker.record_trade(symbol=sym, side="buy", qty=qty,
                                        price=limit, strategy="sixfold")
             log.info("SIXFOLD bought %d %s at %.2f (%s)", qty, sym, limit, f"${notional:,.0f}")
+            record(
+                "sixfold", "order",
+                symbol=sym,
+                thought=f"score={composite:.1f}; {council.summary}",
+                decision="buy",
+                qty=qty,
+                limit=limit,
+                votes=council_detail,
+            )
 
         return {"status": "ok", "orders": placed, "disposals": disposed,
                 "rejections": self.last_rejections}
@@ -271,3 +293,4 @@ class SixfoldExecutor:
     def _reject(self, symbol: str, reason: str) -> None:
         if len(self.last_rejections) < 20:
             self.last_rejections.append({"symbol": symbol, "reason": reason})
+        record("sixfold", "skip", symbol=symbol, thought=reason, decision="reject")

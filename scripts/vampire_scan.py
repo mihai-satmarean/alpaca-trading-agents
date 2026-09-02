@@ -6,7 +6,9 @@ symbols and display what the Vampire would pick for today's session.
 """
 from __future__ import annotations
 
+import argparse
 import logging
+import os
 import pathlib
 import sys
 from datetime import datetime
@@ -28,12 +30,27 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("vampire_scan")
 
 
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Vampire pre-market scan (read-only)")
+    parser.add_argument(
+        "--staging",
+        action="store_true",
+        help="Use ALPACA_STAGING_* keys. Never touches the contest account.",
+    )
+    return parser.parse_args(argv)
+
+
 def main():
+    args = parse_args()
+    if args.staging:
+        os.environ["ALPACA_ENV"] = "staging"
+
     now_et = datetime.now(ET)
     log.info("Vampire Pre-Market Scan -- %s ET", now_et.strftime("%Y-%m-%d %H:%M"))
     log.info("Universe: %d symbols", len(UNIVERSE))
 
-    cfg = load_config()
+    cfg = load_config(staging=args.staging)
+    log.info("Scan env=%s key=%s...", cfg.environment, cfg.api_key[:6])
     client = AlpacaClient(config=cfg, dry_run=True)
     data = MarketDataService(client)
 

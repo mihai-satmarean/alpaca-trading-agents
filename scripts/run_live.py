@@ -8,6 +8,7 @@ single account P&L number is not the only signal available mid-session.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import os
 import pathlib
@@ -42,12 +43,32 @@ from src.core.notify import fmt_money, notify  # noqa: E402
 from src.agents.narrator import NarrationRequest, narrate, summarise_session  # noqa: E402
 from src.core.schedule import ET as SCHED_ET, next_checkpoint, seconds_until  # noqa: E402
 from src.core.strategy_report import build_report, render  # noqa: E402
+from src.core.decision_log import record  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
 OPEN, CLOSE = dt_time(9, 30), dt_time(16, 0)
 REPORT_EVERY = 1800  # seconds
 
 log = logging.getLogger("run_live")
+
+STAGING_NTFY = "alpaca-hackathon-staging-mihai"
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run the trading session. Defaults to the contest paper account.",
+    )
+    parser.add_argument(
+        "--staging",
+        action="store_true",
+        help="Use ALPACA_STAGING_* keys. Never touches the contest account.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log orders without submitting them to the broker",
+    )
+    return parser.parse_args(argv)
 
 
 def market_is_open() -> bool:
@@ -91,6 +112,36 @@ def _recent_rejections(coord: Coordinator) -> list[dict]:
     """Why the options scanner refused what it refused."""
     csp = getattr(getattr(coord, "_options_agent", None), "_csp", None)
     return list(getattr(csp, "last_rejections", []) or [])
+
+
+def decision_observer(coord: Coordinator, stop: threading.Event, interval: float = 20.0) -> None:
+    """Periodic snapshot of what each agent last thought. Complements per-event records."""
+    while not stop.wait(interval):
+        try:
+            vamp = coord._vampire_agent.get_status()
+            thoughts = []
+            for sym, row in (vamp or {}).items():
+                last = row.get("last_thought") or {}
+                if last:
+                    thoughts.append(
+                        f"{sym}: {last.get('decision')} {last.get('thought', '')}"
+                    )
+            six_rejs = list(getattr(coord._sixfold_executor, "last_rejections", []) or [])
+            opts = getattr(coord._options_agent, "last_cycle", {}) or {}
+            record(
+                "observer", "heartbeat",
+                thought="; ".join(thoughts) or "vampire has not ticked yet",
+                decision="snapshot",
+                vampire=vamp,
+                sixfold_rejections=six_rejs[:10],
+                options={
+                    "status": opts.get("status"),
+                    "csp": len(opts.get("csp_trades") or []),
+                    "cc": len(opts.get("cc_trades") or []),
+                },
+            )
+        except Exception:
+            log.warning("decision observer failed", exc_info=True)
 
 
 def report(coord: Coordinator, *, prefix: str = "", severity: str = "default",
@@ -157,7 +208,16 @@ def main() -> int:
         datefmt="%H:%M:%S",
     )
 
-    coord = Coordinator()
+    args = parse_args()
+    if args.staging:
+        os.environ["ALPACA_ENV"] = "staging"
+        os.environ.pop("SNS_TOPIC_ARN", None)
+        os.environ.setdefault("NTFY_TOPIC", STAGING_NTFY)
+        log.info("STAGING mode: contest account keys will not be used")
+    if args.dry_run:
+        log.info("DRY-RUN: orders will be logged, not submitted")
+
+    coord = Coordinator(staging=args.staging, dry_run=args.dry_run)
     stop = threading.Event()
 
     def shutdown(signum, _frame):
@@ -198,6 +258,9 @@ def main() -> int:
             return 0
 
     log.info("market open — starting agents")
+    if args.dry_run:
+        threading.Thread(target=decision_observer, args=(coord, stop), daemon=True).start()
+        log.info("decision observer on — look for [DECISION] lines")
     report(coord, prefix="OPEN · ", blurb="Market open. Agents live.")
 
     coord.start()   # blocks in the coordination loop

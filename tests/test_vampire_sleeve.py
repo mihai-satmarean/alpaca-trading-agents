@@ -8,6 +8,7 @@ on a $100,000 account.
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import MagicMock
 
 import pytest
@@ -174,6 +175,12 @@ class TestSpreadAwareThresholds:
     """A flat $0.02 trigger sits below the spread on most liquid names, so every
     trade it fires is negative before it begins."""
 
+    @pytest.fixture(autouse=True)
+    def _fast_sleep(self, monkeypatch):
+        async def instant(_delay=0):
+            return None
+        monkeypatch.setattr("src.agents.vampire.asyncio.sleep", instant)
+
     def _agent(self, spread, price=700.0):
         from unittest.mock import MagicMock
 
@@ -183,27 +190,33 @@ class TestSpreadAwareThresholds:
         data.get_latest_quote.return_value = q
         allocator.get_budget.return_value = MagicMock(vampire_budget=5_000.0)
         tracker.get_snapshot.return_value = MagicMock(positions={})
-        return VampireAgent(client, data, tracker, breaker, allocator, symbols=["SPY"])
+        return VampireAgent(
+            client, data, tracker, breaker, allocator,
+            symbols=["SPY"], enable_picker=False,
+        )
+
+    def _apply(self, a):
+        asyncio.run(a._apply_spread_thresholds())
 
     def test_threshold_scales_with_the_spread(self):
         a = self._agent(spread=0.06)
-        a._apply_spread_thresholds()
+        self._apply(a)
         assert a._engines["SPY"].cfg.tick_threshold == pytest.approx(0.15)
 
     def test_a_wider_spread_demands_a_bigger_move(self):
-        narrow = self._agent(spread=0.02); narrow._apply_spread_thresholds()
-        wide = self._agent(spread=0.50); wide._apply_spread_thresholds()
+        narrow = self._agent(spread=0.02); self._apply(narrow)
+        wide = self._agent(spread=0.50); self._apply(wide)
         assert (wide._engines["SPY"].cfg.tick_threshold
                 > narrow._engines["SPY"].cfg.tick_threshold)
 
     def test_threshold_always_exceeds_a_round_trip(self):
         for spread in (0.01, 0.05, 0.30, 1.00):
-            a = self._agent(spread=spread); a._apply_spread_thresholds()
+            a = self._agent(spread=spread); self._apply(a)
             assert a._engines["SPY"].cfg.tick_threshold > spread * 2
 
     def test_a_missing_quote_keeps_the_configured_threshold(self):
         a = self._agent(spread=0.06)
         a._data.get_latest_quote.return_value = None
-        before = a._engines["SPY"].cfg.tick_threshold
-        a._apply_spread_thresholds()
-        assert a._engines["SPY"].cfg.tick_threshold == before
+        self._apply(a)
+        assert a._engines["SPY"].cfg.tick_threshold == 0.02
+

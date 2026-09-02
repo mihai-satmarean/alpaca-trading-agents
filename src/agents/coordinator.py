@@ -20,8 +20,10 @@ from src.agents.pendulum import PendulumAgent
 from src.agents.risk_manager import RiskManagerAgent
 from src.agents.sixfold_analyst import SixfoldAnalystAgent
 from src.agents.vampire import VampireAgent
-from src.core.alpaca_client import AlpacaClient
+from src.core.alpaca_client import AlpacaClient, load_config
 from src.core.config import get_config
+from src.core.decision_log import record
+from src.core.agent_status import write_snapshot
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
@@ -32,6 +34,7 @@ from src.strategies.sixfold_executor import SixfoldExecutor
 log = logging.getLogger(__name__)
 
 REBALANCE_INTERVAL = 600  # 10 minutes
+DRY_RUN_INTERVAL = 30
 
 
 class Coordinator:
@@ -45,8 +48,15 @@ class Coordinator:
     5. Shut down gracefully on signal or EOD
     """
 
-    def __init__(self):
-        self._client = AlpacaClient()
+    def __init__(self, *, staging: bool = False, dry_run: bool = False):
+        config = load_config(staging=staging)
+        self._client = AlpacaClient(config=config, dry_run=dry_run)
+        log.info(
+            "Coordinator env=%s dry_run=%s key=%s...",
+            self._client.environment,
+            self._client.is_dry_run,
+            config.api_key[:6],
+        )
         self._data = MarketDataService(self._client)
         self._tracker = PositionTracker(self._client)
 
@@ -117,6 +127,7 @@ class Coordinator:
             )
 
         self._running = False
+        self._last_heavy_cycle = 0.0
 
     def status(self) -> dict:
         snapshot = self._tracker.get_snapshot()
@@ -182,6 +193,7 @@ class Coordinator:
         vampire_thread.start()
 
         log.info("All agents started (including SIXFOLD analyst). Entering coordination loop.")
+        self._publish_snapshot()
         self._coordination_loop()
 
     def _is_market_open(self) -> bool:
@@ -195,57 +207,152 @@ class Coordinator:
             t = now.time()
             return dt_time(9, 30) <= t <= dt_time(16, 0)
 
+    def _publish_snapshot(self) -> None:
+        from src.core.finance_advisor import last_council
+
+        six = self._sixfold_executor
+        scan = self._sixfold_agent.last_scan
+        vampire = self._vampire_agent.get_status()
+        picker = self._vampire_agent.picker_status()
+        risk = self._risk_agent.check()
+        try:
+            snapshot = self._tracker.get_snapshot()
+            budget = self._allocator.get_budget()
+            coordinator = {
+                "equity": snapshot.equity,
+                "cash": snapshot.cash,
+                "daily_pnl": snapshot.daily_pnl,
+                "positions": len(snapshot.positions),
+                "trades_today": self._tracker.trade_count_today,
+                "allocation": {
+                    "options_used": budget.options_used,
+                    "vampire_used": budget.vampire_used,
+                    "reserve_target": budget.reserve_target,
+                },
+            }
+        except Exception:
+            coordinator = {}
+        payload = {
+            "environment": self._client.environment,
+            "dry_run": self._client.is_dry_run,
+            "market_open": self._is_market_open(),
+            "vampire": vampire,
+            "vampire_picker": picker,
+            "sixfold_analyst": {
+                "last_scan": scan.isoformat() if scan else None,
+                "buy_candidates": (
+                    self._sixfold_agent.get_buy_candidates() if scan else []
+                ),
+            },
+            "sixfold_executor": {
+                "orders": list(getattr(six, "last_orders", []) or []),
+                "rejections": list(getattr(six, "last_rejections", []) or []),
+            },
+            "council": last_council,
+            "options": getattr(self._options_agent, "last_cycle", {}) or {},
+            "risk": risk,
+            "coordinator": coordinator,
+            "observer": {
+                "source": "coordinator_snapshot",
+                "vampire_thoughts": {
+                    sym: (info.get("last_thought") or {})
+                    for sym, info in (vampire or {}).items()
+                },
+            },
+        }
+        try:
+            write_snapshot(payload)
+        except Exception:
+            log.warning("could not write agent snapshot", exc_info=True)
+
     def _coordination_loop(self):
         while self._running:
             try:
                 if not self._is_market_open():
                     log.debug("Market closed, sleeping")
+                    self._publish_snapshot()
                     time.sleep(60)
                     continue
 
-                if self._sixfold_executor is not None:
-                    try:
-                        result = self._sixfold_executor.run_cycle()
-                        if result.get("orders"):
-                            log.info("SIXFOLD placed %d orders", len(result["orders"]))
-                    except Exception:
-                        log.exception("SIXFOLD cycle failed")
-
-                # Pendulum decides once a day on the prior close and acts at
-                # the open. should_run() carries the once-a-day guard, so the
-                # 10-minute loop calling it repeatedly is harmless.
-                if self._pendulum_agent is not None and self._pendulum_agent.should_run():
-                    try:
-                        r = self._pendulum_agent.run_cycle()
-                        log.info("PENDULUM %s -> %s (%s)", r.get("signal"),
-                                 r.get("action", "none"), r.get("reason", ""))
-                    except Exception:
-                        log.exception("PENDULUM cycle failed")
-
-                if self._allocator.needs_rebalance():
-                    log.info("Rebalancing allocations")
-                    budget = self._allocator.get_budget()
-                    log.info(
-                        "Options: $%.0f/$%.0f | Vampire: $%.0f/$%.0f",
-                        budget.options_used,
-                        budget.options_budget,
-                        budget.vampire_used,
-                        budget.vampire_budget,
-                    )
-
-                status = self.status()
-                log.info(
-                    "Status: equity=$%.0f pnl=$%.0f trades=%d positions=%d",
-                    status["equity"],
-                    status["daily_pnl"],
-                    status["trades_today"],
-                    status["positions"],
+                heavy_every = (
+                    DRY_RUN_INTERVAL if self._client.is_dry_run else REBALANCE_INTERVAL
                 )
+                now = time.time()
+                run_heavy = now - self._last_heavy_cycle >= heavy_every
+                if run_heavy:
+                    self._last_heavy_cycle = now
+                    if self._sixfold_executor is not None:
+                        try:
+                            result = self._sixfold_executor.run_cycle()
+                            orders = result.get("orders") or []
+                            rejections = result.get("rejections") or []
+                            if orders:
+                                log.info("SIXFOLD placed %d orders", len(orders))
+                            record(
+                                "coordinator", "sixfold_cycle",
+                                thought=(
+                                    f"status={result.get('status')} "
+                                    f"orders={len(orders)} skips={len(rejections)}"
+                                ),
+                                decision=str(result.get("status") or "ok"),
+                                orders=orders,
+                                rejections=rejections,
+                            )
+                        except Exception:
+                            log.exception("SIXFOLD cycle failed")
+
+                    # Pendulum decides once a day on the prior close and acts at
+                    # the open. should_run() carries the once-a-day guard, so the
+                    # 10-minute heavy cycle calling it is harmless.
+                    if self._pendulum_agent is not None and self._pendulum_agent.should_run():
+                        try:
+                            r = self._pendulum_agent.run_cycle()
+                            log.info("PENDULUM %s -> %s (%s)", r.get("signal"),
+                                     r.get("action", "none"), r.get("reason", ""))
+                            record(
+                                "coordinator", "pendulum_cycle",
+                                symbol=str(r.get("symbol") or ""),
+                                thought=str(r.get("reason") or ""),
+                                decision=str(r.get("action") or r.get("signal") or "none"),
+                            )
+                        except Exception:
+                            log.exception("PENDULUM cycle failed")
+
+                    if self._allocator.needs_rebalance():
+                        log.info("Rebalancing allocations")
+                        budget = self._allocator.get_budget()
+                        log.info(
+                            "Options: $%.0f/$%.0f | Vampire: $%.0f/$%.0f",
+                            budget.options_used,
+                            budget.options_budget,
+                            budget.vampire_used,
+                            budget.vampire_budget,
+                        )
+
+                    status = self.status()
+                    log.info(
+                        "Status: equity=$%.0f pnl=$%.0f trades=%d positions=%d",
+                        status["equity"],
+                        status["daily_pnl"],
+                        status["trades_today"],
+                        status["positions"],
+                    )
+                    record(
+                        "coordinator", "status",
+                        thought=(
+                            f"equity=${status['equity']:.0f} pnl=${status['daily_pnl']:.0f} "
+                            f"trades={status['trades_today']} positions={status['positions']}"
+                        ),
+                        decision="ok",
+                        vampire=status.get("vampire_status"),
+                        sixfold=status.get("sixfold"),
+                    )
+                self._publish_snapshot()
 
             except Exception:
                 log.exception("Coordination cycle error")
 
-            time.sleep(REBALANCE_INTERVAL)
+            time.sleep(DRY_RUN_INTERVAL)
 
     def stop(self):
         log.info("=== Shutting down trading system ===")
@@ -291,12 +398,26 @@ class Coordinator:
 
 
 def main():
+    import argparse
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%H:%M:%S",
     )
-    coordinator = Coordinator()
+    parser = argparse.ArgumentParser(description="ProductAdvisors trading coordinator")
+    parser.add_argument(
+        "--staging",
+        action="store_true",
+        help="Use ALPACA_STAGING_* keys (isolated paper account)",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Log orders without submitting them",
+    )
+    args = parser.parse_args()
+    coordinator = Coordinator(staging=args.staging, dry_run=args.dry_run)
     coordinator.start()
 
 

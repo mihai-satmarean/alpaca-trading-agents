@@ -93,6 +93,23 @@ class TestDryRunClient:
     @patch("src.core.alpaca_client.TradingClient")
     @patch("src.core.alpaca_client.StockHistoricalDataClient")
     @patch("src.core.alpaca_client.StockDataStream")
+    def test_submit_order_not_submitted(self, mock_stream, mock_data, mock_trading):
+        from alpaca.trading.requests import LimitOrderRequest
+        from alpaca.trading.enums import TimeInForce
+
+        cfg = AlpacaConfig(api_key="K", secret_key="S", paper=True)
+        client = AlpacaClient(config=cfg, dry_run=True)
+        req = LimitOrderRequest(
+            symbol="JPM", qty=2, side=OrderSide.BUY,
+            time_in_force=TimeInForce.DAY, limit_price=200.0,
+        )
+        result = client.submit_order(req)
+        assert result["status"] == "dry_run"
+        mock_trading.return_value.submit_order.assert_not_called()
+
+    @patch("src.core.alpaca_client.TradingClient")
+    @patch("src.core.alpaca_client.StockHistoricalDataClient")
+    @patch("src.core.alpaca_client.StockDataStream")
     def test_close_position_not_called(self, mock_stream, mock_data, mock_trading):
         cfg = AlpacaConfig(api_key="K", secret_key="S", paper=True)
         client = AlpacaClient(config=cfg, dry_run=True)
@@ -123,3 +140,81 @@ class TestEnvironmentProperty:
         cfg = AlpacaConfig(api_key="K", secret_key="S", paper=True, environment="staging")
         client = AlpacaClient(config=cfg)
         assert client.environment == "staging"
+
+
+class TestCoordinatorWiresStaging:
+    def test_passes_staging_and_dry_run_into_alpaca_client(self):
+        cfg = AlpacaConfig(
+            api_key="STGKEY", secret_key="STGSEC", paper=True, environment="staging"
+        )
+        config_obj = MagicMock()
+        config_obj.validate.return_value = []
+        config_obj.vampire_symbols = ["SPY"]
+        config_obj.vampire_paused_until = None
+        config_obj.pendulum_pct = 0
+        config_obj.pendulum_symbol = "TLT"
+        config_obj.pendulum = {}
+
+        with (
+            patch("src.agents.coordinator.load_config", return_value=cfg) as mock_load,
+            patch("src.agents.coordinator.AlpacaClient") as mock_client,
+            patch("src.agents.coordinator.MarketDataService"),
+            patch("src.agents.coordinator.PositionTracker"),
+            patch("src.agents.coordinator.get_config", return_value=config_obj),
+            patch("src.agents.coordinator.CircuitBreaker"),
+            patch("src.agents.coordinator.AllocationManager"),
+            patch("src.agents.coordinator.OptionsIncomeAgent"),
+            patch("src.agents.coordinator.VampireAgent"),
+            patch("src.agents.coordinator.PendulumAgent"),
+            patch("src.agents.coordinator.RiskManagerAgent"),
+            patch("src.agents.coordinator.SixfoldAnalystAgent"),
+            patch("src.agents.coordinator.SixfoldExecutor"),
+        ):
+            mock_client.return_value.environment = "staging"
+            mock_client.return_value.is_dry_run = True
+            from src.agents.coordinator import Coordinator
+
+            Coordinator(staging=True, dry_run=True)
+            mock_load.assert_called_once_with(staging=True)
+            mock_client.assert_called_once()
+            assert mock_client.call_args.kwargs["dry_run"] is True
+            assert mock_client.call_args.kwargs["config"] is cfg
+
+
+class TestRunLiveFlags:
+    def _load_run_live(self):
+        import importlib.util
+        from pathlib import Path
+
+        path = Path("scripts/run_live.py")
+        spec = importlib.util.spec_from_file_location("run_live_under_test", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+        return mod
+
+    def test_parse_args_defaults_to_contest_account(self):
+        args = self._load_run_live().parse_args([])
+        assert args.staging is False
+        assert args.dry_run is False
+
+    def test_parse_args_staging_and_dry_run(self):
+        args = self._load_run_live().parse_args(["--staging", "--dry-run"])
+        assert args.staging is True
+        assert args.dry_run is True
+
+
+class TestRunStagingScript:
+    def test_refuses_contest_fallback_and_requires_confirm(self):
+        from pathlib import Path
+
+        src = Path("scripts/run_staging.sh").read_text()
+        assert "ALPACA_ENV=staging" in src
+        assert "unset SNS_TOPIC_ARN" in src
+        assert "CONFIRM_STAGING_LIVE" in src
+        assert "ALPACA_STAGING_API_KEY" in src
+        assert "will not fall back to the contest" in src
+        assert "100.101.239.56:30400" in src
+        assert "OPENAI_BASE_URL" in src
+        assert "DECISION_LOG" in src
+        assert "observe" in src

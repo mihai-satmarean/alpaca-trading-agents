@@ -14,6 +14,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
+from src.core.decision_log import record
 from src.core.financial_data import FinancialDataProvider
 from src.strategies.sixfold_engine import SixfoldEngine, SixfoldScore, ConfidenceTier
 
@@ -107,6 +108,22 @@ class SixfoldAnalystAgent:
 
         for s in scores[:5]:
             log.info("  %s: %.1f (%s)", s.symbol, s.composite_score, s.confidence.value)
+
+        recs = [
+            {
+                "symbol": r.symbol,
+                "score": round(r.score, 1),
+                "action": r.action,
+                "rationale": r.rationale,
+            }
+            for r in self._latest_recommendations[:20]
+        ]
+        record(
+            "sixfold_analyst", "scan",
+            thought=f"{len(scores)} scored, {len(buy_candidates)} buy candidates",
+            decision="ranked",
+            candidates=recs,
+        )
 
         return self._latest_recommendations
 

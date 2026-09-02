@@ -44,7 +44,7 @@ class TestSleeveCards:
         assert "Over by $5,385.00" in c and "pa-bar--over" in c and "width:100%" in c
 
     def test_retired_and_armed_statuses(self):
-        assert "Retired" in sleeve_card_html("Scalper", 0.0, 0.0, 0.0, "retired")
+        assert "Retired" in sleeve_card_html("Vampire", 0.0, 0.0, 0.0, "retired")
         assert "Armed, no signal yet" in sleeve_card_html("Pendulum", 0.15, 14865.0, 0.0, "armed")
 
     def test_four_cards_in_a_band(self):

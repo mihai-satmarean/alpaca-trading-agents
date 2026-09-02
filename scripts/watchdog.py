@@ -105,7 +105,7 @@ def main() -> int:
                 return 1
             elif exposure >= cap * WARN_AT:
                 if not warned:
-                    notify("Scalper above its sleeve",
+                    notify("Vampire above its sleeve",
                            f"${exposure:,.0f} against ${cap:,.0f} "
                            f"({exposure / cap:.1f}x). Containment at "
                            f"{CONTAIN_AT:.1f}x.",

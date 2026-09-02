@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import statistics
+import threading
 import time
 
 from src.core.alpaca_client import AlpacaClient
@@ -12,6 +13,7 @@ from src.core.market_data import MarketDataService, Quote
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationManager
 from src.risk.circuit_breakers import CircuitBreaker
+from src.strategies.regime_advisor import RegimeAdvisor
 from src.strategies.vampire_engine import VampireConfig, VampireEngine, VampireState
 
 log = logging.getLogger(__name__)
@@ -52,6 +54,7 @@ class VampireAgent:
         allocator: AllocationManager,
         symbols: list[str] | None = None,
         config_overrides: dict | None = None,
+        regime_advisor: RegimeAdvisor | None = None,
     ):
         self._client = client
         self._data = data
@@ -65,9 +68,58 @@ class VampireAgent:
         self._symbols = list(symbols)
         self._overrides = overrides
         self._engines: dict[str, VampireEngine] = {}
+        self._advisor = regime_advisor
+        self._regime_stop = threading.Event()
+        self._regime_thread: threading.Thread | None = None
         for sym in symbols:
             cfg = VampireConfig(symbol=sym, **overrides)
+            if regime_advisor is not None:
+                cfg.entry_gate = self._entry_gate_for(sym)
             self._engines[sym] = VampireEngine(client, data, tracker, cfg)
+
+    # -- LLM regime gate -----------------------------------------------------
+
+    def _entry_gate_for(self, symbol: str):
+        """One closure per symbol, built here rather than inline in the loop:
+        a lambda written inside the loop closes over the loop variable and
+        every engine ends up asking about the last symbol."""
+        advisor = self._advisor
+        return lambda: advisor.entry_allowed(symbol)
+
+    def _refresh_regimes(self) -> None:
+        """Ask the advisor about every symbol, off the quote thread.
+
+        A verdict is 17 to 19 seconds of model time on dell4-chat. Run inside
+        tick() it would stall the quote loop for the duration and every engine
+        would miss every tick in it, so it lives on its own thread.
+        """
+        if self._advisor is None:
+            return
+        for sym in list(self._engines):
+            try:
+                bars = self._data.get_recent_minute_bars(
+                    sym, minutes=self._advisor.bars_needed * 3)
+            except Exception:
+                log.warning("%s: could not read bars for the regime advisor; "
+                            "entries stay closed", sym, exc_info=True)
+                bars = []
+            self._advisor.refresh(sym, bars)
+
+    def _regime_loop(self) -> None:
+        while not self._regime_stop.is_set():
+            try:
+                self._refresh_regimes()
+            except Exception:
+                log.warning("regime refresh failed; entries stay closed until "
+                            "the next pass", exc_info=True)
+            self._regime_stop.wait(self._advisor.window_seconds)
+
+    def _start_regime_loop(self) -> None:
+        if self._advisor is None or self._regime_thread is not None:
+            return
+        self._regime_thread = threading.Thread(
+            target=self._regime_loop, name="vampire-regime", daemon=True)
+        self._regime_thread.start()
 
     def _reconcile_engines(self) -> None:
         """Point each engine at the position the broker reports for its symbol."""
@@ -252,6 +304,8 @@ class VampireAgent:
                 "daily_pnl": engine.daily_pnl,
                 "bleed_count": len(engine.bleeds),
             }
+            if self._advisor is not None:
+                status[sym]["regime"] = self._advisor.status().get(sym)
         return status
 
     async def run(self):
@@ -271,6 +325,7 @@ class VampireAgent:
         self._apply_sleeve_limits()
         self._drop_unshortable()
         self._apply_spread_thresholds()
+        self._start_regime_loop()
 
         all_symbols = list(self._engines.keys())
         log.info("Vampire Agent starting with %d symbols: %s", len(all_symbols), all_symbols)
@@ -286,6 +341,7 @@ class VampireAgent:
         await self._data.run_stream()
 
     def stop_all(self):
+        self._regime_stop.set()
         for sym, engine in self._engines.items():
             engine._flatten_all("agent_stop")
             engine._state = VampireState.STOPPED

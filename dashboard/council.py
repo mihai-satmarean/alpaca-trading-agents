@@ -112,7 +112,7 @@ You are a quantitative portfolio advisor for an algorithmic trading system \
 running on the Alpaca paper-trading API with $100K equity.
 
 The system runs four strategies:
-1. Vampire Scalper -- bi-directional micro-scalping on liquid tickers (IOC orders)
+1. Vampire -- bi-directional micro-scalping on liquid tickers (IOC orders)
 2. Options Income -- cash-secured puts on small-cap names
 3. SIXFOLD -- fundamental equity scoring and position building
 4. Pendulum -- mean-reversion on TLT (long-duration Treasuries)
@@ -566,7 +566,7 @@ def _diff_table(current: dict, proposed: dict) -> list[dict]:
     labels = {
         "sixfold_pct": "SIXFOLD",
         "options_pct": "Options (CSP)",
-        "vampire_pct": "Vampire Scalper",
+        "vampire_pct": "Vampire",
         "pendulum_pct": "Pendulum (TLT)",
         "reserve_pct": "Reserve",
     }

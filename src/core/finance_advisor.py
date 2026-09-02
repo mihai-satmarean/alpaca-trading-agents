@@ -361,6 +361,6 @@ def market_briefing(equity: float, daily_pnl: float,
         f"Portfolio equity: ${equity:,.0f}\n"
         f"Daily P&L: ${daily_pnl:+,.0f}\n"
         f"Current positions: {', '.join(positions[:15]) if positions else 'none'}\n"
-        f"Strategies active: SIXFOLD equity selection, CSP income, micro-scalping\n"
+        f"Strategies active: SIXFOLD equity selection, CSP income, Vampire micro-scalping\n"
     )
     return _safe_call("dell4-finance", _MARKET_SYSTEM, prompt, "briefing")

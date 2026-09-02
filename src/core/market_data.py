@@ -5,12 +5,13 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
 from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame
 
 from src.core.alpaca_client import AlpacaClient
@@ -94,6 +95,28 @@ class MarketDataService:
             end=end,
         )
         return self._data.get_stock_bars(req)
+
+    def get_recent_minute_bars(self, symbol: str, minutes: int = 90) -> list:
+        """The last ``minutes`` of one-minute bars, oldest first, from IEX.
+
+        The free plan refuses SIP data newer than 15 minutes, and IEX is the
+        feed the scalper's quotes come from anyway, so the regime advisor
+        judges the same tape the engine trades on.
+        """
+        end = datetime.now(timezone.utc)
+        req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame.Minute,
+            start=end - timedelta(minutes=minutes),
+            end=end,
+            feed=DataFeed.IEX,
+        )
+        result = self._data.get_stock_bars(req)
+        try:
+            bars = result[symbol]
+        except (KeyError, TypeError):
+            bars = (getattr(result, "data", None) or {}).get(symbol, [])
+        return list(bars)
 
     def get_vwap(self, symbol: str, window_seconds: int = 5) -> float | None:
         tracker = self._vwaps.get(symbol)

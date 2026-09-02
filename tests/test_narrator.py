@@ -27,7 +27,7 @@ def _req(**kw) -> NarrationRequest:
         daily_pnl=-125.50,
         sleeves={"CSP (options)": {"committed": 12_400.0, "budget": 20_000.0, "unrealized": 88.0,
                                    "positions": ["CLF261016P00011000"]},
-                 "Vampire (scalper)": {"committed": 5_900.0, "budget": 20_000.0, "unrealized": -213.5,
+                 "Vampire": {"committed": 5_900.0, "budget": 20_000.0, "unrealized": -213.5,
                                        "positions": ["SPY"]}},
         actions=[{"strategy": "csp", "symbol": "CLF261016P00011000", "side": "sell_to_open",
                   "credit": 41.0, "collateral": 1_100.0, "annualized": 0.31,

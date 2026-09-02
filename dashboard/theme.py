@@ -124,13 +124,21 @@ p, li, .stMarkdown {{ color: var(--pa-ink); font-size: 16px; line-height: 1.6; }
 
 /* Streamlit widgets, restyled to the system */
 .stTabs [data-baseweb="tab-list"] {{ gap: 28px; border-bottom: 1px solid var(--pa-gray-100); }}
-.stTabs [data-baseweb="tab"] {{ height: 46px; padding: 0; font-size: 14px; font-weight: 600; letter-spacing: 0.02em; color: var(--pa-gray-600); }}
-.stTabs [aria-selected="true"] {{ color: var(--pa-ink); }}
-.stTabs [data-baseweb="tab-highlight"] {{ background: var(--pa-ink); height: 2px; }}
+.stTabs [data-baseweb="tab"] {{ height: 52px; padding: 0 2px; font-size: 16px; font-weight: 600; letter-spacing: 0.01em; color: var(--pa-gray-600); }}
+.stTabs [data-baseweb="tab"] p {{ font-size: 16px !important; font-weight: 600 !important; color: inherit !important; }}
+.stTabs [aria-selected="true"] {{ color: var(--pa-purple); }}
+.stTabs [data-baseweb="tab-highlight"] {{ background: var(--pa-purple); height: 3px; }}
 .stButton > button {{ border-radius: var(--pa-radius-chip); background: var(--pa-ink); color: var(--pa-white); border: 1px solid var(--pa-ink);
   font-weight: 600; letter-spacing: 0.01em; padding: 10px 22px; transition: background .2s var(--pa-ease), transform .2s var(--pa-ease); }}
 .stButton > button:hover {{ background: var(--pa-purple); border-color: var(--pa-purple); color: var(--pa-white); transform: translateY(-1px); }}
 .stButton > button[kind="primary"] {{ background: var(--pa-purple); border-color: var(--pa-purple); }}
+/* Streamlit renders the label in its own <p>, which keeps the theme's ink text
+   color under a dark button: black on black. Inherit from the button. */
+.stButton > button {{ color: var(--pa-white) !important; }}
+.stButton > button p, .stButton > button span, .stButton > button div {{ color: inherit !important; }}
+.stButton > button:disabled {{ background: var(--pa-gray-100); border-color: var(--pa-gray-100); color: var(--pa-gray-600) !important; }}
+.stDownloadButton > button, .stFormSubmitButton > button {{ color: var(--pa-white) !important; }}
+.stDownloadButton > button p, .stFormSubmitButton > button p {{ color: inherit !important; }}
 [data-testid="stExpander"] {{ border: 1px solid var(--pa-gray-100); border-radius: var(--pa-radius-card); background: var(--pa-white); }}
 [data-testid="stExpander"] summary {{ font-weight: 600; }}
 [data-testid="stMetric"] {{ background: var(--pa-white); border: 1px solid var(--pa-gray-100); border-radius: var(--pa-radius-outcome); padding: 16px 18px; }}
@@ -250,7 +258,7 @@ def positions_table_html(rows: list[dict]) -> str:
     each group sorted by P&L descending, totals in the footer."""
     if not rows:
         return '<p style="color:#6e6e73">No open positions.</p>'
-    order = ["SixFold", "CSP", "Pendulum", "Scalper", "Other"]
+    order = ["SixFold", "CSP", "Pendulum", "Vampire", "Other"]
     groups: dict[str, list[dict]] = {}
     for r in rows:
         groups.setdefault(r.get("sleeve") or "Other", []).append(r)

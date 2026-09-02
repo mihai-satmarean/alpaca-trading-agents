@@ -13,7 +13,7 @@ One coordinator runs four independent strategy sleeves against a single Alpaca p
 | SIXFOLD (60%) | Long large-cap quality, 14 names max | Tashi's six-lens fundamental score (Buffett moat, ROIC, Damodaran regression, mismatch, capital signals, historical returns); buy above 60, sell below 40 |
 | CSP (15%) | Sells cash-secured puts, 7 to 45 DTE, delta under 0.30, open interest over 100 | Premium yield ranked, 30% per-name concentration cap |
 | Pendulum (15%) | Mean reversion on long Treasuries (TLT) | z-score under −2.0 on a 20-day mean plus RSI(2) under 10; exits on reversion, RSI over 70, a 10-day time stop, or a 1.5×ATR hard stop; 200-day regime filter with half size and a 1.0×ATR stop below it |
-| Scalper (retired) | Bi-directional 5-second VWAP scalper | Retired on day 5 on measured expectancy |
+| Vampire (retired) | Bi-directional 5-second VWAP micro-scalper: buys dips, shorts rips | Retired on day 5 on measured expectancy |
 
 ## AI logic: the LLM only where ambiguity exists
 
@@ -33,11 +33,11 @@ Pendulum's signal is computed by the same `decide()` function in the backtest an
 
 ## Alpaca infrastructure
 
-Trading API via alpaca-py for equities, options (cash-secured puts, level 3 approved), IOC and DAY limit orders, and position closes. Market Data API for real-time quote streaming (scalper), SIP-adjusted daily bars (Pendulum), and option chains. The **Alpaca MCP server** (`alpaca-mcp-server` over stdio) supplies live option quotes to the CSP scanner, which refuses to price any contract it cannot quote. Everything runs unattended on an EC2 instance under systemd: the agent, the watchdog, a post-open verification timer, and a Streamlit dashboard with live signals, allocation, and the notification journal. 501 automated tests; the risk gates added or repaired this week are mutation-tested (the guard is deleted and the suite must fail).
+Trading API via alpaca-py for equities, options (cash-secured puts, level 3 approved), IOC and DAY limit orders, and position closes. Market Data API for real-time quote streaming (Vampire), SIP-adjusted daily bars (Pendulum), and option chains. The **Alpaca MCP server** (`alpaca-mcp-server` over stdio) supplies live option quotes to the CSP scanner, which refuses to price any contract it cannot quote. Everything runs unattended on an EC2 instance under systemd: the agent, the watchdog, a post-open verification timer, and a Streamlit dashboard with live signals, allocation, and the notification journal. 501 automated tests; the risk gates added or repaired this week are mutation-tested (the guard is deleted and the suite must fail).
 
 ## What we measured, and what we cut
 
-P&L attribution comes from the broker's fill ledger, never from engine counters. That ledger retired two strategies mid-competition. HOOD and SPY were dropped from the scalper on day 4 after posting losses in every hour of a session. On day 5, across 10,470 real fills, the scalper stood at −$663 realized while its internal counter claimed a large profit. A 5-second mean-reversion edge is smaller than the spread it pays, and no parameter fixes that. The sleeve was retired and its capital moved to the only sleeve with a positive mark. Two latent defects in the risk layer were found the same way, from the live log, and fixed with tests that fail if they return. We think an agent that can tell when it is wrong, and acts on it, is the part worth judging.
+P&L attribution comes from the broker's fill ledger, never from engine counters. That ledger retired two strategies mid-competition. HOOD and SPY were dropped from the Vampire on day 4 after posting losses in every hour of a session. On day 5, across 10,470 real fills, the Vampire stood at −$663 realized while its internal counter claimed a large profit. A 5-second mean-reversion edge is smaller than the spread it pays, and no parameter fixes that. The sleeve was retired and its capital moved to the only sleeve with a positive mark. Two latent defects in the risk layer were found the same way, from the live log, and fixed with tests that fail if they return. We think an agent that can tell when it is wrong, and acts on it, is the part worth judging.
 
 ## Results
 

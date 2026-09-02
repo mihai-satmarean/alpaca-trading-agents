@@ -7,12 +7,13 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=/opt/alpaca-agent
 EnvironmentFile=/opt/alpaca-agent/.env
-# Bound to loopback deliberately. Tailscale reaches it through `tailscale
-# serve`, which proxies from the tailnet to 127.0.0.1, so the socket is never
-# exposed on a routable interface and the security group is not the only thing
-# standing between live account data and the internet.
+# Bound to all interfaces since 2026-09-02: the hackathon submission needs an
+# Application URL the judging panel can open, Funnel is not enabled on the
+# tailnet, and Let's Encrypt will not issue for an EC2 hostname, so this is
+# plain HTTP on 8501 behind the app's fail-closed token gate (require_token in
+# dashboard/app.py) and an explicit security-group rule. It is a paper account.
 ExecStart=/opt/alpaca-agent/.venv/bin/python -m streamlit run dashboard/app.py \
-  --server.address 127.0.0.1 \
+  --server.address 0.0.0.0 \
   --server.port 8501 \
   --server.headless true \
   --browser.gatherUsageStats false

@@ -50,11 +50,18 @@
 # with measured negative expectancy is retired, not resized. Its 15 points go to
 # SIXFOLD, the only sleeve with real notional and a positive mark, so the idle
 # third of the account is deployed through the one signal that has held up.
+# 2026-09-02 16:10 ET, Frank's call on Tashi's request to run SIXFOLD over the
+# S&P 400 "with the remaining fund": ten points move from Pendulum to SIXFOLD.
+# Pendulum keeps 5%, which still funds one tranche (about 18 TLT shares at the
+# aggressive-mode half size). The arithmetic worth knowing: SIXFOLD was already
+# ~$3.8K over its 60% sleeve after the KO round-lot top-up, so 70% buys about
+# $6K of new positions, one or two mid-cap names, not the whole idle balance.
+# The remaining lever is reserve 10 -> 5, deliberately left alone.
 allocation:
-  sixfold_pct: 0.60      # Tashi SIXFOLD, was 0.45
+  sixfold_pct: 0.70      # Tashi SIXFOLD, was 0.60
   options_pct: 0.15      # CSP
   vampire_pct: 0.00      # scalper RETIRED on measured expectancy (see above)
-  pendulum_pct: 0.15     # Tashi Pendulum
+  pendulum_pct: 0.05     # Tashi Pendulum, was 0.15
   reserve_pct: 0.10      # buffer
 
 # Pendulum -- mean reversion on long-duration Treasuries, Tashi's spec v1.1.
@@ -300,9 +307,15 @@ sixfold:
   buy_threshold: 60.0
   hold_threshold: 50.0
   dispose_threshold: 40.0
-  # 10 -> 14 so the four admitted names have slots. Per-name budget is
-  # sleeve / max_concurrent = ~$4,265, under the 5% single-trade cap.
-  max_concurrent: 14
+  # 14 -> 20 with the S&P 400 in the universe: Tashi's framework is a screen
+  # across many names, so new mid-cap positions are sized at sleeve / 20
+  # (~$3.5K) rather than sleeve / 14, and the existing 13 large caps keep
+  # their lots. The advisory council still gates every buy.
+  max_concurrent: 20
+  # S&P 400 constituents (config/universe_sp400.txt, 400 tickers), appended to
+  # the inline list above. A full scan is about seven minutes at ~1.1s per name
+  # through the fundamentals feed, against an hourly rescan.
+  universe_file: universe_sp400.txt
   scan_interval_seconds: 3600
 
 risk:

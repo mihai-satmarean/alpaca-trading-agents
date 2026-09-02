@@ -48,6 +48,10 @@ class TestSixfoldIsConfiguredFromTheFile:
             "the hardcoded list carried SPY/QQQ (score 0) and dropped KO/PEP"
         )
         assert kw.get("buy_threshold") == cfg.sixfold_buy_threshold == 60.0
+        assert len(kw["universe"]) >= 418, "the S&P 400 file must reach the analyst"
+        assert "AAON" in kw["universe"] and kw["universe"][0] == "AAPL", (
+            "inline names first, then the file; both present"
+        )
         assert kw.get("dispose_threshold") == cfg.sixfold_dispose_threshold
 
     def test_the_executor_gets_the_yml_concurrency_limit(self):
@@ -58,7 +62,7 @@ class TestSixfoldIsConfiguredFromTheFile:
                                "AlpacaClient": None, "MarketDataService": None,
                                "PositionTracker": None})
         assert m["SixfoldExecutor"].call_args.kwargs.get("max_concurrent") \
-            == cfg.sixfold_max_concurrent == 14
+            == cfg.sixfold_max_concurrent == 20
 
     def test_the_analyst_honours_its_thresholds(self):
         from src.agents.sixfold_analyst import SixfoldAnalystAgent

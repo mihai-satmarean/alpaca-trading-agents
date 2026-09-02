@@ -138,20 +138,46 @@ def render_header(client: AlpacaClient):
     )
 
 
+# The hackathon fixes the starting balance at $100,000, so "since start" is
+# measured against that rather than against whatever equity the process saw
+# at boot, which is the mistake the daily figure used to make.
+STARTING_EQUITY = 100_000.0
+
+
+def pnl_figures(equity: float, last_equity: float, start: float = STARTING_EQUITY) -> dict:
+    """Today's and cumulative P&L, in dollars and percent. Pure, so it is testable.
+
+    Mihai asked whether the dashboard's gain was daily or total. It was daily
+    only, and unlabelled. Both are shown now and each says which it is.
+    """
+    today = equity - last_equity
+    since = equity - start
+    return {
+        "today": today,
+        "today_pct": (today / last_equity * 100.0) if last_equity else 0.0,
+        "since_start": since,
+        "since_start_pct": (since / start * 100.0) if start else 0.0,
+    }
+
+
 def render_account(client: AlpacaClient, tracker: PositionTracker):
     account = client.get_account()
-    snapshot = tracker.get_snapshot()
+    equity = float(account.equity)
+    f = pnl_figures(equity, float(getattr(account, "last_equity", equity) or equity))
 
-    col1, col2, col3, col4, col5 = st.columns(5)
-    with col1:
-        st.metric("Equity", f"${float(account.equity):,.2f}", f"${snapshot.daily_pnl:+,.2f}")
-    with col2:
+    c1, c2, c3, c4, c5, c6 = st.columns(6)
+    with c1:
+        st.metric("Equity", f"${equity:,.2f}")
+    with c2:
+        st.metric("Today", f"${f['today']:+,.2f}", f"{f['today_pct']:+.2f}% vs prior close")
+    with c3:
+        st.metric("Since start", f"${f['since_start']:+,.2f}",
+                  f"{f['since_start_pct']:+.2f}% on ${STARTING_EQUITY:,.0f}")
+    with c4:
         st.metric("Cash", f"${float(account.cash):,.2f}")
-    with col3:
-        st.metric("Buying Power", f"${float(account.buying_power):,.2f}")
-    with col4:
+    with c5:
         st.metric("Positions", len(client.get_positions()))
-    with col5:
+    with c6:
         st.metric("Trades Today", tracker.trade_count_today)
 
 

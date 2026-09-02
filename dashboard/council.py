@@ -46,9 +46,9 @@ LITELLM_KEY = (os.environ.get("LITELLM_KEY") or os.environ.get("OPENAI_API_KEY")
 # EC2 is known to reach. Mihai's original pointed all three at a k3s node
 # that is reachable from his desk and not from the instance.
 COUNCIL_MODELS = [
-    {"id": "dell4-finance", "label": "dell4-finance", "base_url": LITELLM_DELL4, "max_tokens": 2048},
-    {"id": "dell4-chat", "label": "dell4-chat", "base_url": LITELLM_DELL4, "max_tokens": 2048},
-    {"id": "dell4-qwen38", "label": "dell4-qwen38", "base_url": LITELLM_DELL4, "max_tokens": 2048},
+    {"id": "dell4-finance", "label": "dell4-finance", "base_url": LITELLM_DELL4, "max_tokens": 4096},
+    {"id": "dell4-chat", "label": "dell4-chat", "base_url": LITELLM_DELL4, "max_tokens": 4096},
+    {"id": "dell4-qwen38", "label": "dell4-qwen38", "base_url": LITELLM_DELL4, "max_tokens": 4096},
 ]
 
 # Writing config/strategies.yml from a browser tab is off unless the operator
@@ -299,7 +299,12 @@ def _query_model(model_cfg: dict, context: str) -> dict:
             with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
             elapsed = time.monotonic() - start
-            content = data["choices"][0]["message"]["content"]
+            msg = data["choices"][0]["message"]
+            # A reasoning model that spends its budget thinking returns
+            # content None with the text in reasoning_content. The engine's
+            # own council hit this on 2026-09-01; the parser downstream
+            # expects a string, and None crashed the whole page.
+            content = msg.get("content") or msg.get("reasoning_content") or ""
             return {
                 "model": model_cfg["id"],
                 "label": model_cfg["label"],
@@ -334,7 +339,9 @@ def _query_model(model_cfg: dict, context: str) -> dict:
             }
 
 
-def _parse_yaml_block(text: str) -> dict | None:
+def _parse_yaml_block(text: str | None) -> dict | None:
+    if not text:
+        return None
     """Extract allocation from model output, tolerating format variations.
 
     Models may use different key names (sixfold vs sixfold_pct), percentage

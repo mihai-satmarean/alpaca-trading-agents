@@ -37,6 +37,52 @@ ET = ZoneInfo("America/New_York")
 
 
 @st.cache_resource
+def _token_ok(candidate: str | None, expected: str | None) -> bool:
+    """Fail closed. No configured token means nobody gets in, not everybody.
+
+    The dashboard shows live positions and P&L for the whole account. The
+    failure mode to design against is the one that cannot be seen: a missing
+    DASHBOARD_TOKEN in the environment after a redeploy, which with the
+    opposite default would silently publish the book to the internet.
+    """
+    import hmac
+    if not expected or not candidate:
+        return False
+    return hmac.compare_digest(str(candidate), str(expected))
+
+
+def require_token() -> None:
+    """Gate the page on a shared token, via ?token= or a password box.
+
+    Streamlit has no authentication. This is a shared secret for a paper
+    account dashboard whose audience is the team and the judging panel, not a
+    login system; it exists so the URL alone is not enough.
+    """
+    expected = os.environ.get("DASHBOARD_TOKEN")
+    if st.session_state.get("_authed") is True:
+        return
+    supplied = None
+    try:
+        supplied = st.query_params.get("token")
+    except Exception:
+        supplied = None
+    if _token_ok(supplied, expected):
+        st.session_state["_authed"] = True
+        return
+    st.title("ProductAdvisors trading dashboard")
+    if not expected:
+        st.error("This dashboard has no access token configured, so it is locked.")
+        st.stop()
+    typed = st.text_input("Access token", type="password")
+    if typed and _token_ok(typed, expected):
+        st.session_state["_authed"] = True
+        st.rerun()
+    if typed:
+        st.error("That token is not valid.")
+    st.caption("Ask the ProductAdvisors team for the token, or open the link that includes it.")
+    st.stop()
+
+
 def get_client():
     return AlpacaClient()
 
@@ -611,6 +657,7 @@ def render_sixfold_scanner():
 
 
 def main():
+    require_token()
     try:
         client = get_client()
         data_svc = get_data()

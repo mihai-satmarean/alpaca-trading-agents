@@ -295,7 +295,10 @@ class TestSleevesDoNotChargeEachOther:
         b = AllocationManager(tracker, AllocationConfig.from_config()).get_budget()
         assert b.pendulum_used == pytest.approx(9_000.0)
         assert b.unattributed_used == pytest.approx(4_800.0)
-        assert b.pendulum_budget == pytest.approx(15_000.0)
+        from src.core.config import load_config
+        # The point is that the bucket exists and is sized from config, not a
+        # literal: the split is a live decision (15% on 9/1, 5% on 9/2).
+        assert b.pendulum_budget == pytest.approx(100_000.0 * load_config().pendulum_pct)
 
 
 class TestTheDataContractIsReal:

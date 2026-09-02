@@ -33,7 +33,7 @@ Pendulum's signal is computed by the same `decide()` function in the backtest an
 
 ## Alpaca infrastructure
 
-Trading API via alpaca-py for equities, options (cash-secured puts, level 3 approved), IOC and DAY limit orders, and position closes. Market Data API for real-time quote streaming (scalper), SIP-adjusted daily bars (Pendulum), and option chains. The **Alpaca MCP server** (`alpaca-mcp-server` over stdio) supplies live option quotes to the CSP scanner, which refuses to price any contract it cannot quote. Everything runs unattended on an EC2 instance under systemd: the agent, the watchdog, a post-open verification timer, and a Streamlit dashboard with live signals, allocation, and the notification journal. 501 automated tests; every risk gate is mutation-tested (the guard is deleted and the suite must fail).
+Trading API via alpaca-py for equities, options (cash-secured puts, level 3 approved), IOC and DAY limit orders, and position closes. Market Data API for real-time quote streaming (scalper), SIP-adjusted daily bars (Pendulum), and option chains. The **Alpaca MCP server** (`alpaca-mcp-server` over stdio) supplies live option quotes to the CSP scanner, which refuses to price any contract it cannot quote. Everything runs unattended on an EC2 instance under systemd: the agent, the watchdog, a post-open verification timer, and a Streamlit dashboard with live signals, allocation, and the notification journal. 501 automated tests; the risk gates added or repaired this week are mutation-tested (the guard is deleted and the suite must fail).
 
 ## What we measured, and what we cut
 

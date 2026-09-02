@@ -49,8 +49,14 @@ class SixfoldAnalystAgent:
         self,
         client: AlpacaClient,
         universe: list[str] | None = None,
+        buy_threshold: float = 65.0,
+        hold_threshold: float = 50.0,
+        dispose_threshold: float = 40.0,
     ):
         self._client = client
+        self.buy_threshold = float(buy_threshold)
+        self.hold_threshold = float(hold_threshold)
+        self.dispose_threshold = float(dispose_threshold)
         self._data_provider = FinancialDataProvider()
         self._engine = SixfoldEngine()
         self._universe = universe or [
@@ -122,13 +128,13 @@ class SixfoldAnalystAgent:
 
         lens_summary = {lr.name: lr.score for lr in score.lens_results}
 
-        if score.composite_score >= 65:
+        if score.composite_score >= self.buy_threshold:
             action = "buy_candidate"
             rationale = self._build_buy_rationale(score)
-        elif score.composite_score >= 50:
+        elif score.composite_score >= self.hold_threshold:
             action = "hold"
             rationale = "Adequate quality but not compelling at current price"
-        elif score.composite_score >= 40:
+        elif score.composite_score >= self.dispose_threshold:
             action = "dispose"
             rationale = self._build_dispose_rationale(score)
         else:
@@ -158,11 +164,12 @@ class SixfoldAnalystAgent:
                 weaknesses.append(lr.name)
         return f"Weak on: {', '.join(weaknesses)}" if weaknesses else "Below quality threshold"
 
-    def get_buy_candidates(self, min_score: float = 65.0) -> list[str]:
+    def get_buy_candidates(self, min_score: float | None = None) -> list[str]:
         """Return symbols that score above the buy threshold."""
+        floor = self.buy_threshold if min_score is None else float(min_score)
         return [
             r.symbol for r in self._latest_recommendations
-            if r.action == "buy_candidate" and r.score >= min_score
+            if r.action == "buy_candidate" and r.score >= floor
         ]
 
     def get_disposal_candidates(self) -> list[str]:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from src.core.alpaca_client import AlpacaClient
 
@@ -41,6 +42,7 @@ class PositionTracker:
         self._trades: list[TradeRecord] = []
         self._initial_equity: float | None = None
         self._daily_start_equity: float | None = None
+        self._daily_start_date = None
 
     def record_trade(
         self,
@@ -71,8 +73,19 @@ class PositionTracker:
 
         if self._initial_equity is None:
             self._initial_equity = equity
-        if self._daily_start_equity is None:
-            self._daily_start_equity = equity
+        # The day's baseline is the broker's previous-close equity, not the
+        # equity at process boot. Boot-time baselining made daily_pnl read
+        # about zero after every restart (live: tracker -$0.03 while the broker
+        # said +$502), so the 2% daily-loss breaker measured loss since the
+        # last restart rather than since the open, and a restart mid-drawdown
+        # silently re-armed the account for another 2%. Re-baselined when the
+        # session date rolls, for a process that runs across midnight.
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        if self._daily_start_equity is None or self._daily_start_date != today:
+            self._daily_start_equity = float(
+                getattr(account, "last_equity", None) or equity
+            )
+            self._daily_start_date = today
 
         positions = {}
         for pos in self._client.get_positions():
@@ -98,7 +111,10 @@ class PositionTracker:
 
     def reset_daily(self):
         account = self._client.get_account()
-        self._daily_start_equity = float(account.equity)
+        self._daily_start_equity = float(
+            getattr(account, "last_equity", None) or account.equity
+        )
+        self._daily_start_date = datetime.now(ZoneInfo("America/New_York")).date()
 
     @property
     def trades(self) -> list[TradeRecord]:

@@ -42,11 +42,19 @@
 # options and vampire. Sixfold is the only one that has to sell anything to
 # get there; the scalper is halted and the CSP sleeve was already inside its
 # new number.
+# Final-allocation decision, 2026-09-02 13:00 ET, taken against the published
+# judging criteria (five unweighted: P&L, technology, creativity, presentation,
+# social) rather than against a rank-on-P&L reading. Broker fills, not engine
+# counters, settled what each sleeve is worth: over 10,470 fills the scalper is
+# -$662.74 realized lifetime (HOOD -664, SPY -57, TQQQ -39, QQQ +99). A sleeve
+# with measured negative expectancy is retired, not resized. Its 15 points go to
+# SIXFOLD, the only sleeve with real notional and a positive mark, so the idle
+# third of the account is deployed through the one signal that has held up.
 allocation:
-  sixfold_pct: 0.45      # Tashi SIXFOLD, was 0.50
-  options_pct: 0.15      # CSP, was 0.20
-  vampire_pct: 0.15      # scalper, was 0.20
-  pendulum_pct: 0.15     # Tashi Pendulum, new
+  sixfold_pct: 0.60      # Tashi SIXFOLD, was 0.45
+  options_pct: 0.15      # CSP
+  vampire_pct: 0.00      # scalper RETIRED on measured expectancy (see above)
+  pendulum_pct: 0.15     # Tashi Pendulum
   reserve_pct: 0.10      # buffer
 
 # Pendulum -- mean reversion on long-duration Treasuries, Tashi's spec v1.1.
@@ -282,8 +290,19 @@ sixfold:
     - MRK
     - PEP
     - KO
-  buy_threshold: 65.0
+  # 65 -> 60 on 2026-09-02, and this is a DEPLOYMENT decision, not a signal
+  # improvement, so it is labelled as one. Every name scoring 65+ was already
+  # held (NVDA 78.5 ... HD 65.0) and the sleeve sat at $43K of $60K with nothing
+  # left to buy. The next four (AMZN 61.9, LLY 61.3, COST 61.1, MRK 61.0) sit in
+  # the analyst's own "hold: adequate quality" band; admitting them deploys the
+  # sleeve into large-cap quality rather than leaving a third of the account in
+  # cash for the last two sessions. The advisory council still gates each buy.
+  buy_threshold: 60.0
+  hold_threshold: 50.0
   dispose_threshold: 40.0
+  # 10 -> 14 so the four admitted names have slots. Per-name budget is
+  # sleeve / max_concurrent = ~$4,265, under the 5% single-trade cap.
+  max_concurrent: 14
   scan_interval_seconds: 3600
 
 risk:

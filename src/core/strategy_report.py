@@ -80,11 +80,15 @@ def describe_orders(orders) -> list[str]:
     lines: list[str] = []
     for o in orders or []:
         try:
-            sym = getattr(o, "symbol", None) or o.get("symbol")
-            side = getattr(o, "side", None) or o.get("side")
-            qty = getattr(o, "qty", None) or o.get("qty")
-            limit = getattr(o, "limit_price", None) or o.get("limit_price")
-            status = getattr(o, "status", None) or o.get("status")
+            # `getattr(o, k, None) or o.get(k)` fell through to .get() on a
+            # real Order whenever the attribute was legitimately falsy (a
+            # market order has limit_price None), which raised and dropped
+            # the line from every report. Dicts and objects are told apart
+            # once, and a falsy attribute stays falsy.
+            def field(k):
+                return o.get(k) if isinstance(o, dict) else getattr(o, k, None)
+            sym, side, qty = field("symbol"), field("side"), field("qty")
+            limit, status = field("limit_price"), field("status")
             price = f" @ {float(limit):.2f}" if limit else ""
             lines.append(f"  {sym} {_plain(side)} {qty}{price} · {_plain(status)}")
         except Exception:

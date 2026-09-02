@@ -127,6 +127,12 @@ class StrategyConfig:
         return out
 
     @property
+    def vampire_regime_advisor(self) -> dict[str, Any]:
+        """The regime_advisor block under vampire; empty when the gate is off."""
+        block = self.vampire.get("regime_advisor") or {}
+        return dict(block) if block.get("enabled", False) else {}
+
+    @property
     def csp(self) -> dict[str, Any]:
         return dict(self.options.get("csp", {}))
 
@@ -163,7 +169,7 @@ class StrategyConfig:
         shared = scalper & sixfold_universe
         if shared:
             problems.append(
-                f"scalper and sixfold share {sorted(shared)}: the scalper adopts "
+                f"Vampire and SIXFOLD share {sorted(shared)}: the Vampire adopts "
                 f"whatever the broker holds in its symbols at startup and flattens "
                 f"them at end of day, so a shared symbol hands one sleeve's "
                 f"positions to the other"
@@ -171,8 +177,8 @@ class StrategyConfig:
         shared_csp = scalper & {x.upper() for x in self.options_symbols}
         if shared_csp:
             problems.append(
-                f"scalper and CSP share {sorted(shared_csp)}: assigned shares "
-                f"would be adopted and flattened by the scalper"
+                f"Vampire and CSP share {sorted(shared_csp)}: assigned shares "
+                f"would be adopted and flattened by the Vampire"
             )
 
         max_delta = self.csp.get("max_delta")

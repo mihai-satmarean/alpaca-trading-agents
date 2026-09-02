@@ -42,7 +42,7 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
 
     sleeves = {
         "CSP (options)": SleeveReport("CSP (options)", equity * cfg.options_pct),
-        "Vampire (scalper)": SleeveReport("Vampire (scalper)", equity * cfg.vampire_pct),
+        "Vampire": SleeveReport("Vampire", equity * cfg.vampire_pct),
         "SixFold (Tashi)": SleeveReport("SixFold (Tashi)", equity * cfg.sixfold_pct),
         "Unattributed": SleeveReport("Unattributed", 0.0),
     }
@@ -51,7 +51,7 @@ def build_report(snapshot, *, nav_base: float | None = None) -> dict[str, Sleeve
         if parse_occ(sym) is not None:
             key = "CSP (options)"
         elif sym.upper() in scalper_universe:
-            key = "Vampire (scalper)"
+            key = "Vampire"
         elif sym.upper() in sixfold_universe:
             key = "SixFold (Tashi)"
         else:

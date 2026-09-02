@@ -82,7 +82,7 @@ class TestCrossSleeveOverlapIsRejected:
             vampire={"symbols": ["AAPL", "TQQQ"]},
             sixfold={"universe": ["AAPL", "MSFT"]},
         )
-        assert any("scalper and sixfold" in p for p in cfg.validate())
+        assert any("Vampire and SIXFOLD" in p for p in cfg.validate())
 
     def test_scalper_sharing_a_csp_name_is_a_problem(self):
         from src.core.config import StrategyConfig
@@ -93,7 +93,7 @@ class TestCrossSleeveOverlapIsRejected:
             vampire={"symbols": ["MARA"]},
             options={"symbols": ["MARA", "CLF"]},
         )
-        assert any("scalper and CSP" in p for p in cfg.validate())
+        assert any("Vampire and CSP" in p for p in cfg.validate())
 
     def test_the_repo_config_is_clean(self):
         from src.core.config import load_config

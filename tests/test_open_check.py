@@ -24,18 +24,18 @@ class TestCollateralBySleeve:
         assert amount == 4800.0          # $16 x 100 x 3
 
     def test_scalper_symbols_are_their_market_value(self):
-        assert oc.collateral("QQQ", 3, 2145.81) == ("Scalper", 2145.81)
+        assert oc.collateral("QQQ", 3, 2145.81) == ("Vampire", 2145.81)
 
     def test_a_short_is_counted_by_size_not_sign(self):
         """A short is exposure, not negative exposure."""
-        assert oc.collateral("HOOD", -20, -2083.20) == ("Scalper", 2083.20)
+        assert oc.collateral("HOOD", -20, -2083.20) == ("Vampire", 2083.20)
 
     def test_everything_else_is_sixfold(self):
         assert oc.collateral("NVDA", 22, 4796.99) == ("SixFold", 4796.99)
 
     def test_a_retired_scalper_symbol_is_still_the_scalpers(self):
         """SOXL was dropped from config but its position was still ours."""
-        assert oc.collateral("SOXL", 12, 1338.48)[0] == "Scalper"
+        assert oc.collateral("SOXL", 12, 1338.48)[0] == "Vampire"
 
 
 class TestLogSignaturesCountsOnlyToday:
@@ -92,7 +92,7 @@ class TestThresholds:
         assert 19 < oc.REJECT_STORM < 4700
 
     def test_caps_match_the_configured_split_on_100k(self):
-        assert oc.CAPS == {"Scalper": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
+        assert oc.CAPS == {"Vampire": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
 
 
 class TestClosedMarketIsNotAnAlarm:
@@ -134,7 +134,7 @@ class TestClosedMarketIsNotAnAlarm:
         from collections import Counter
         title, body, severity = self._run(monkeypatch, is_open=True, fills=(Counter(), {}))
         assert severity == "high"
-        assert "zero scalper fills" in body
+        assert "zero Vampire fills" in body
 
     def test_an_unreadable_clock_prefers_the_false_alarm(self, monkeypatch):
         """Silence is the worse failure: alarm when the state is unknown."""
@@ -154,7 +154,7 @@ class TestClosedMarketIsNotAnAlarm:
         monkeypatch.setattr(oc, "units_status", lambda: (["x active restarts=0"], True))
         monkeypatch.setattr(oc, "fills_today", lambda day: (Counter(), {}))
         _, body, severity = oc.build_report("09:30:00")
-        assert severity == "high" and "zero scalper fills" in body
+        assert severity == "high" and "zero Vampire fills" in body
 
     def test_a_dead_service_alarms_even_on_a_holiday(self, monkeypatch):
         """A closed market excuses no fills. It does not excuse a dead agent."""

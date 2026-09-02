@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from datetime import time as dt_time
 from enum import Enum
+from typing import Callable
 from zoneinfo import ZoneInfo
 
 from alpaca.trading.enums import OrderSide, TimeInForce
@@ -71,6 +72,10 @@ class VampireConfig:
     # again and nothing further is required. Fail-safe by construction - a bug
     # here can only stop trading, never start it.
     paused_until: str | None = None
+    # Asked before every NEW lot and never before an exit. None means no gate.
+    # A gate that raises answers "no": every failure mode of a gate is cheap in
+    # the direction of not trading and expensive in the other.
+    entry_gate: Callable[[], bool] | None = None
 
 
 class VampireEngine:
@@ -180,6 +185,18 @@ class VampireEngine:
             )
             return True
         return False
+
+    def _entry_allowed(self) -> bool:
+        """Consult the entry gate, if any. Exits never come through here."""
+        gate = self.cfg.entry_gate
+        if gate is None:
+            return True
+        try:
+            return bool(gate())
+        except Exception:
+            log.warning("%s: entry gate raised; treating it as closed",
+                        self.cfg.symbol, exc_info=True)
+            return False
 
     def _check_rate_limit(self) -> bool:
         now = time.time()
@@ -350,7 +367,8 @@ class VampireEngine:
             elif abs(self._net_position) < self.cfg.max_position:
                 room = self.cfg.max_position - abs(self._net_position)
                 want = min(self.cfg.position_size, room)
-                if want < 1 or self._would_breach_notional(want, current_price):
+                if want < 1 or self._would_breach_notional(want, current_price) \
+                        or not self._entry_allowed():
                     want = 0
                 qty = self._submit(want, current_price, OrderSide.SELL) if want else 0
                 if qty:
@@ -378,7 +396,8 @@ class VampireEngine:
             elif self._net_position < self.cfg.max_position:
                 room = self.cfg.max_position - self._net_position
                 want = min(self.cfg.position_size, room)
-                if want < 1 or self._would_breach_notional(want, current_price):
+                if want < 1 or self._would_breach_notional(want, current_price) \
+                        or not self._entry_allowed():
                     want = 0
                 qty = self._submit(want, current_price, OrderSide.BUY) if want else 0
                 if qty:

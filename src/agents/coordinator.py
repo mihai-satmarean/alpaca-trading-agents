@@ -20,6 +20,7 @@ from src.agents.pendulum import PendulumAgent
 from src.agents.risk_manager import RiskManagerAgent
 from src.agents.sixfold_analyst import SixfoldAnalystAgent
 from src.agents.vampire import VampireAgent
+from src.strategies.regime_advisor import RegimeAdvisor
 from src.core.alpaca_client import AlpacaClient
 from src.core.config import get_config
 from src.core.market_data import MarketDataService
@@ -60,6 +61,14 @@ class Coordinator:
         self._options_agent = OptionsIncomeAgent(
             self._client, self._data, self._tracker, self._breaker, self._allocator
         )
+        adv = cfg.vampire_regime_advisor
+        regime_advisor = RegimeAdvisor(
+            model=str(adv.get("model", "dell4-chat")),
+            window_seconds=int(adv.get("window_minutes", 15)) * 60,
+            bars_needed=int(adv.get("bars", 30)),
+            ttl_seconds=int(adv.get("ttl_minutes", 20)) * 60,
+            min_confidence=float(adv.get("min_confidence", 0.0)),
+        ) if adv else None
         self._vampire_agent = VampireAgent(
             self._client,
             self._data,
@@ -68,6 +77,7 @@ class Coordinator:
             self._allocator,
             symbols=cfg.vampire_symbols or ["SPY", "QQQ"],
             config_overrides=cfg.vampire_engine_overrides or None,
+            regime_advisor=regime_advisor,
         )
         pend = dict(cfg.pendulum or {})
         self._pendulum_agent = PendulumAgent(

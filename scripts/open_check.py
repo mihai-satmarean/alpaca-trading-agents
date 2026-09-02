@@ -30,7 +30,7 @@ ET = ZoneInfo("America/New_York")
 LOG = "/opt/alpaca-agent/logs/session.err"
 SCALPER = {"QQQ", "SPY", "HOOD", "TQQQ", "SOXL"}
 OCC = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
-CAPS = {"Scalper": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
+CAPS = {"Vampire": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
 REJECT_STORM = 50          # 4,700 in 29 minutes on 2026-08-31
 UNITS = ("alpaca-agent", "alpaca-watchdog")
 
@@ -102,7 +102,7 @@ def collateral(symbol: str, qty: float, market_value: float) -> tuple[str, float
     if m:
         return "CSP", int(m.group(4)) / 1000 * 100 * abs(qty)
     if symbol in SCALPER:
-        return "Scalper", abs(market_value)
+        return "Vampire", abs(market_value)
     return "SixFold", abs(market_value)
 
 
@@ -171,7 +171,7 @@ def build_report(since: str) -> tuple[str, str, str]:
     n, cash = fills_today(day)
     total_fills = sum(n.values())
     if total_fills == 0 and session_open:
-        problems.append("zero scalper fills")
+        problems.append("zero Vampire fills")
 
     if problems:
         headline = "PROBLEM: " + "; ".join(problems)
@@ -188,11 +188,11 @@ def build_report(since: str) -> tuple[str, str, str]:
             pnl = cash[sym] + marks.get(sym, 0.0)
             pnl_total += pnl
             parts.append(f"{sym} {n[sym]}f {pnl:+.2f}")
-        lines.append(f"scalper {total_fills} fills {pnl_total:+.2f}: " + ", ".join(parts))
+        lines.append(f"Vampire {total_fills} fills {pnl_total:+.2f}: " + ", ".join(parts))
     else:
-        lines.append("scalper: no fills yet")
+        lines.append("Vampire: no fills yet")
 
-    lines.append("  ".join(f"{s} ${used[s]:,.0f}/{CAPS[s]:,.0f}" for s in ("Scalper", "CSP", "SixFold")))
+    lines.append("  ".join(f"{s} ${used[s]:,.0f}/{CAPS[s]:,.0f}" for s in ("Vampire", "CSP", "SixFold")))
     lines.append("  ".join(unit_lines))
     lines.append("log: " + (", ".join(f"{k}={v}" for k, v in sorted(sig.items())) or "clean"))
 

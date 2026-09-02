@@ -37,7 +37,7 @@ CHECKPOINTS: tuple[Checkpoint, ...] = (
     Checkpoint(dt_time(12, 0), "MIDDAY",
                "Half-session status."),
     Checkpoint(dt_time(15, 30), "PRE-CLOSE",
-               "Twenty minutes before the scalper is flattened. Options stay on."),
+               "Twenty minutes before the Vampire is flattened. Options stay on."),
     Checkpoint(dt_time(16, 15), "CLOSED",
                "Session finished.", severity="high", closing=True),
 )

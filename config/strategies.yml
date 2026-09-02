@@ -64,7 +64,7 @@
 allocation:
   sixfold_pct: 0.75      # Tashi SIXFOLD, was 0.70
   options_pct: 0.15      # CSP
-  vampire_pct: 0.00      # scalper RETIRED on measured expectancy (see above)
+  vampire_pct: 0.00      # Vampire RETIRED on measured expectancy (see above)
   pendulum_pct: 0.05     # Tashi Pendulum
   reserve_pct: 0.05      # buffer, was 0.10
 
@@ -159,6 +159,20 @@ vampire:
   # it and lifts the halt on its own. Nothing has to be remembered, and no
   # machine outside EC2 has to be awake for the scalper to trade the open.
   paused_until: "2026-09-02"
+
+  # LLM regime gate (2026-09-02). Every window_minutes the advisor reads the
+  # last `bars` one-minute bars and labels the regime; the scalper opens new
+  # lots only in "chop". Exits never consult it. A missing, stale (older than
+  # ttl_minutes), unparseable or unreachable verdict closes entries. The gate
+  # was measured against this week's real fills first:
+  # scripts/validate_vampire_gates.py.
+  regime_advisor:
+    enabled: true
+    model: dell4-chat
+    window_minutes: 15
+    bars: 30
+    ttl_minutes: 20
+    min_confidence: 0.0
 
   # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
   # is movement LARGER than the spread it pays to capture it. Sampling 18 liquid

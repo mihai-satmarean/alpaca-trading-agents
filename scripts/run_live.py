@@ -80,7 +80,7 @@ def _recent_actions(coord: Coordinator) -> list[dict]:
                         "symbol": row["symbol"],
                         "side": f"{row['trades']} trades, net {row['net_position']:+d}",
                         "realized_pnl": row.get("realized_pnl"),
-                        "reason": f"scalper {row.get('state')}",
+                        "reason": f"Vampire {row.get('state')}",
                     })
         except Exception:
             log.warning("could not read vampire activity", exc_info=True)

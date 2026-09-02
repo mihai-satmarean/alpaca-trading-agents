@@ -234,7 +234,7 @@ def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
         dict(name="CSP", target_pct=cfg.options_pct, budget=budget.options_budget, used=budget.options_used, status="active"),
         dict(name="Pendulum", target_pct=cfg.pendulum_pct, budget=budget.pendulum_budget, used=budget.pendulum_used,
              status="active" if budget.pendulum_used > 0 else "armed"),
-        dict(name="Scalper", target_pct=cfg.vampire_pct, budget=budget.vampire_budget, used=budget.vampire_used,
+        dict(name="Vampire", target_pct=cfg.vampire_pct, budget=budget.vampire_budget, used=budget.vampire_used,
              status="retired" if cfg.vampire_pct == 0 else ("active" if not cfg.vampire_paused_until else "armed")),
     ]
 
@@ -266,7 +266,7 @@ def render_allocation(allocator: AllocationManager):
         ("SixFold",  cfg.sixfold_pct,  budget.sixfold_budget,  sixfold_used,        "#1d1d1f"),
         ("CSP",      cfg.options_pct,  budget.options_budget,  budget.options_used, "#503AA8"),
         ("Pendulum", cfg.pendulum_pct, budget.pendulum_budget, budget.pendulum_used, "#8a6ff0"),
-        ("Scalper",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#c7c7cc"),
+        ("Vampire",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#c7c7cc"),
     ]
     deployed = sum(x[3] for x in sleeves)
     idle = max(0.0, eq - deployed)
@@ -383,7 +383,7 @@ def render_positions(client: AlpacaClient):
     for p in positions:
         sym = str(p.symbol).upper()
         sleeve = ("CSP" if parse_occ(sym) else "Pendulum" if sym == cfg.pendulum_symbol
-                  else "Scalper" if sym in scal else "SixFold")
+                  else "Vampire" if sym in scal else "SixFold")
         rows.append({"sleeve": sleeve, "symbol": p.symbol, "qty": float(p.qty),
                      "entry": float(p.avg_entry_price), "last": float(p.current_price),
                      "pl": float(p.unrealized_pl), "plpc": float(p.unrealized_plpc) * 100,
@@ -412,7 +412,7 @@ def render_orders(client: AlpacaClient):
 
 
 def render_strategy_pnl(tracker: PositionTracker):
-    strategies = {"csp": "Cash-Secured Puts", "covered_call": "Covered Calls", "vampire": "Vampire Scalper"}
+    strategies = {"csp": "Cash-Secured Puts", "covered_call": "Covered Calls", "vampire": "Vampire"}
     data = []
     for key, label in strategies.items():
         data.append({
@@ -486,6 +486,73 @@ def render_vampire_status():
          "Max position": cfg.vampire.get("max_position", "-")}
         for sym in (cfg.vampire_symbols or ["-"])
     ]), hide_index=True, use_container_width=True)
+    _render_regime_verdicts(cfg)
+
+
+def _render_regime_verdicts(cfg) -> None:
+    """The LLM's latest regime call per symbol, read from its journal.
+
+    The advisor lives in the agent process; the journal is the only channel
+    that survives the process boundary and it also records every failure, so
+    "no verdict" shows as a closed gate rather than as silence.
+    """
+    from src.strategies.regime_advisor import read_regime_journal
+    adv = cfg.vampire_regime_advisor
+    if not adv:
+        return
+    st.caption(f"LLM regime advisor: {adv.get('model')} every "
+               f"{adv.get('window_minutes', 15)} min; new lots only in chop, "
+               f"exits never gated, no verdict = closed")
+    latest: dict[str, dict] = {}
+    for rec in read_regime_journal(limit=400):
+        sym = rec.get("symbol")
+        if sym and sym not in latest:
+            latest[sym] = rec
+    if not latest:
+        st.info("No verdicts journalled yet. The advisor starts with the agent and runs in shadow mode while the sleeve is unfunded.")
+        return
+    now = time.time()
+    rows = []
+    for sym, rec in sorted(latest.items()):
+        age = now - float(rec.get("at") or now)
+        rows.append({
+            "Symbol": sym,
+            "Regime": rec.get("regime") or "no verdict",
+            "Entries": "open" if rec.get("regime") == "chop" and age <= adv.get("ttl_minutes", 20) * 60 else "closed",
+            "Confidence": rec.get("confidence"),
+            "Age": f"{int(age // 60)}m",
+            "Reason": rec.get("reason") or rec.get("error") or "",
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+
+
+def render_recent_notifications(limit: int = 6) -> None:
+    """The last few engine notifications, on the overview where they get seen.
+
+    The full feed lives in its own tab, which is easy to miss in a tab strip.
+    Read from the journal (every send is recorded with its delivery outcome), so
+    a failed alert shows here as failed rather than as silence.
+    """
+    from src.core.notify import read_journal
+    recs = read_journal(limit=limit)
+    if not recs:
+        st.info("No notifications journalled yet.")
+        return
+    rows = []
+    for r in recs:
+        when = r.get("ts") or r.get("at") or r.get("time") or ""
+        if isinstance(when, (int, float)):
+            when = datetime.fromtimestamp(when).strftime("%m-%d %H:%M")
+        else:
+            when = str(when)[5:16].replace("T", " ")
+        rows.append({
+            "When": when,
+            "Title": r.get("title") or r.get("subject") or "",
+            "Message": str(r.get("message") or r.get("body") or "")[:110],
+            "Sent": "yes" if r.get("delivered") else ("no: " + str(r.get("error") or "")[:40] if r.get("error") else "no"),
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption("Full feed, including what ntfy still holds, in the Notifications tab.")
 
 
 def _ntfy_live(topic: str, since: str = "12h",
@@ -772,7 +839,9 @@ def main():
             st.subheader("Open Orders")
             render_orders(client)
 
-            st.subheader("Scalper (Vampire)")
+            st.subheader("Vampire")
+            st.caption("Bi-directional micro-scalping on liquid ETFs: buys dips, shorts rips. "
+                       "Entries pass an LLM regime gate; exits never wait for anyone.")
             render_vampire_status()
 
             st.subheader("Pendulum")
@@ -784,6 +853,9 @@ def main():
 
             st.subheader("P&L by Strategy")
             render_strategy_pnl(tracker)
+
+            st.subheader("Latest Notifications")
+            render_recent_notifications()
 
     with tab_sixfold:
         st.subheader("SIXFOLD Equity Analysis")

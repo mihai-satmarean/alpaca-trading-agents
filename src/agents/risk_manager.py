@@ -124,14 +124,31 @@ class RiskManagerAgent:
         """
         closed: list[str] = []
         try:
-            self._client.cancel_all_orders()
-            for pos in self._client.get_positions():
+            # Two defects lived here together, and the first hid the second.
+            # This method read self._client, which the constructor never set
+            # (it stores self._alpaca), so it raised AttributeError on its
+            # first line every evening since it was written and never closed
+            # anything: the scalper carried positions overnight and the
+            # startup log showed "adopted broker position" each morning. Had
+            # it run, cancel_all_orders() would have killed the CSP sleeve's
+            # resting limit orders and SIXFOLD's DAY limits too, which is
+            # exactly the forfeiture the docstring says this must not do.
+            # Cancels are scoped to the intraday symbols, like the closes.
+            for order in self._alpaca.get_orders(status="open"):
+                sym = str(getattr(order, "symbol", "")).upper()
+                if sym in self._intraday_symbols:
+                    try:
+                        self._alpaca.cancel_order(str(order.id))
+                    except Exception:
+                        log.warning("EOD: could not cancel %s order %s", sym,
+                                    getattr(order, "id", "?"), exc_info=True)
+            for pos in self._alpaca.get_positions():
                 symbol = str(pos.symbol).upper()
                 if parse_occ(symbol) is not None:
                     continue  # options sleeve: hold
                 if symbol not in self._intraday_symbols:
                     continue  # not ours to close
-                self._client.close_position(symbol)
+                self._alpaca.close_position(symbol)
                 closed.append(symbol)
 
             self._last_flatten_date = datetime.now(ZoneInfo("America/New_York")).date()

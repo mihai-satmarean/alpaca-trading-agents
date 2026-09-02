@@ -102,3 +102,9 @@ class TestReasoningModelsWithNoContent:
 
     def test_the_token_budget_is_large_enough_for_a_thinking_model(self):
         assert all(m["max_tokens"] >= 4096 for m in C.COUNCIL_MODELS)
+
+
+class TestConsultLatencyBudget:
+    def test_one_attempt_with_a_timeout_that_fits_a_thinking_model(self):
+        assert C.MAX_RETRIES == 1
+        assert C.MODEL_TIMEOUT_S >= 240

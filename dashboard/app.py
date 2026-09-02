@@ -23,6 +23,7 @@ from src.core.financial_data import FinancialDataProvider
 from src.strategies.csp import CashSecuredPutStrategy
 from src.strategies.sixfold_engine import SixfoldEngine
 from src.risk.allocation import AllocationManager, AllocationConfig
+from src.core.config import load_config
 
 load_dotenv()
 
@@ -105,39 +106,57 @@ def render_account(client: AlpacaClient, tracker: PositionTracker):
 
 
 def render_allocation(allocator: AllocationManager):
-    budget = allocator.get_budget()
+    """Every sleeve, not three of them.
 
-    options_pct = budget.options_used / budget.total_equity * 100 if budget.total_equity else 0
-    vampire_pct = budget.vampire_used / budget.total_equity * 100 if budget.total_equity else 0
-    cash_val = budget.total_equity - budget.options_used - budget.vampire_used
-    cash_pct = cash_val / budget.total_equity * 100 if budget.total_equity else 0
+    This chart showed Options, Vampire and Cash while the account ran five
+    sleeves, so SIXFOLD's 45% and Pendulum's 15% were both being drawn as
+    "Cash". A capital chart that omits the largest strategy is worse than no
+    chart, because it looks authoritative.
+    """
+    budget = allocator.get_budget()
+    cfg = load_config()
+    eq = budget.total_equity or 1.0
+
+    sixfold_used = sum(
+        abs(float(p.get("market_value", 0.0)))
+        for sym, p in get_tracker().get_snapshot().positions.items()
+        if len(sym) <= 6
+        and sym.upper() not in {x.upper() for x in cfg.vampire_symbols}
+        and sym.upper() != cfg.pendulum_symbol
+    )
+    sleeves = [
+        ("SixFold",  cfg.sixfold_pct,  budget.sixfold_budget,  sixfold_used,        "#8b5cf6"),
+        ("CSP",      cfg.options_pct,  budget.options_budget,  budget.options_used, "#3b82f6"),
+        ("Pendulum", cfg.pendulum_pct, budget.pendulum_budget, budget.pendulum_used, "#14b8a6"),
+        ("Scalper",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#f97316"),
+    ]
+    deployed = sum(x[3] for x in sleeves)
+    idle = max(0.0, eq - deployed)
 
     fig = go.Figure(data=[go.Pie(
-        labels=[
-            f"Options ({options_pct:.0f}%)",
-            f"Vampire ({vampire_pct:.0f}%)",
-            f"Cash ({cash_pct:.0f}%)",
-        ],
-        values=[budget.options_used or 1, budget.vampire_used or 1, cash_val],
+        labels=[f"{n} ({u / eq * 100:.0f}%)" for n, _, _, u, _ in sleeves] + [f"Idle ({idle / eq * 100:.0f}%)"],
+        values=[max(u, 0.01) for _, _, _, u, _ in sleeves] + [idle],
         hole=0.5,
-        marker_colors=["#3b82f6", "#f97316", "#22c55e"],
+        marker_colors=[c for *_, c in sleeves] + ["#94a3b8"],
         textinfo="label",
     )])
-    fig.update_layout(
-        height=280,
-        margin=dict(t=10, b=10, l=10, r=10),
-        showlegend=False,
-        font=dict(size=12),
-    )
+    fig.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10),
+                      showlegend=False, font=dict(size=12))
     st.plotly_chart(fig, use_container_width=True)
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Options", f"${budget.options_budget:,.0f}", f"${budget.options_available:,.0f} free")
-    with c2:
-        st.metric("Vampire", f"${budget.vampire_budget:,.0f}", f"${budget.vampire_available:,.0f} free")
-    with c3:
-        st.metric("Reserve", f"${budget.reserve_target:,.0f}")
+    rows = []
+    for name, pct, bud, used, _ in sleeves:
+        over = used - bud
+        rows.append({
+            "Sleeve": name,
+            "Target": f"{pct * 100:.0f}%",
+            "Budget": f"${bud:,.0f}",
+            "Used": f"${used:,.0f}",
+            "Status": f"OVER ${over:,.0f}" if over > 1 else f"${bud - used:,.0f} free",
+        })
+    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.caption(f"Idle capital ${idle:,.0f} ({idle / eq * 100:.1f}%). "
+               f"Reserve target ${budget.reserve_target:,.0f}.")
 
 
 def render_market_snapshot(data_svc: MarketDataService):
@@ -314,15 +333,109 @@ def render_trade_history(tracker: PositionTracker):
 
 
 def render_vampire_status():
-    st.markdown("""
-    | Symbol | Mode | Net Pos | Daily P&L | Bleeds |
-    |--------|------|---------|-----------|--------|
-    | SPY | Watching (live stream) | 0 | $0.00 | 0 |
-    | QQQ | Watching (live stream) | 0 | $0.00 | 0 |
+    """Read the live config rather than assert a fixed answer.
 
-    *Vampire engines are subscribed to real-time WebSocket quotes.
-    Trading begins when market opens and price oscillations exceed the $0.02 threshold.*
-    """)
+    This was static markdown claiming SPY and QQQ were "Watching" with zero
+    P&L. Both facts had been false for days: the symbols are QQQ and TQQQ, and
+    the strategy is halted. A hardcoded status panel does not degrade when the
+    system changes, it just becomes wrong while still looking live.
+    """
+    cfg = load_config()
+    from src.strategies.vampire_engine import VampireConfig, VampireEngine
+
+    paused_until = cfg.vampire_paused_until
+    probe = VampireEngine.__new__(VampireEngine)
+    probe.cfg = VampireConfig(symbol="_", paused_until=paused_until)
+    paused = probe._is_paused()
+
+    if paused:
+        st.warning(f"HALTED until {paused_until}. The pause lifts itself on that "
+                   f"date; no manual step is needed.")
+    else:
+        st.success("Active" + (f" (pause expired {paused_until})" if paused_until else ""))
+
+    st.dataframe(pd.DataFrame([
+        {"Symbol": sym, "Status": "Halted" if paused else "Watching",
+         "Threshold": f"${cfg.vampire.get('tick_threshold', 0.02):.2f}",
+         "Max position": cfg.vampire.get("max_position", "-")}
+        for sym in (cfg.vampire_symbols or ["-"])
+    ]), hide_index=True, use_container_width=True)
+
+
+def render_pendulum():
+    """Tashi's long-Treasury mean-reversion sleeve.
+
+    Shows the signal the engine will actually act on, computed by the same
+    decide() the live agent calls, so this panel cannot drift away from the
+    strategy it claims to describe.
+    """
+    cfg = load_config()
+    if cfg.pendulum_pct <= 0:
+        st.info("Pendulum is not allocated.")
+        return
+
+    from src.strategies.pendulum import (
+        PendulumParams, compute_indicators, decide, stop_price,
+    )
+    p = PendulumParams(
+        entry_z=float(cfg.pendulum.get("entry_z", -2.0)),
+        entry_rsi=float(cfg.pendulum.get("entry_rsi", 10)),
+        add_z=float(cfg.pendulum.get("add_z", -2.75)),
+        exit_rsi=float(cfg.pendulum.get("exit_rsi", 70)),
+        allow_below_regime=bool(cfg.pendulum.get("allow_below_regime", False)),
+        below_regime_size_mult=float(cfg.pendulum.get("below_regime_size_mult", 0.5)),
+        below_regime_atr_mult=float(cfg.pendulum.get("below_regime_atr_mult", 1.0)),
+    )
+    sym = cfg.pendulum_symbol
+    mode = "Aggressive" if p.allow_below_regime else "Conservative"
+
+    try:
+        import datetime as _dt
+        from alpaca.data.enums import Adjustment
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame
+        req = StockBarsRequest(
+            symbol_or_symbols=sym, timeframe=TimeFrame.Day,
+            start=_dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=420),
+            adjustment=Adjustment.ALL, feed="sip")
+        bars = list(get_data()._data.get_stock_bars(req).data.get(sym, []))
+        today = datetime.now(ZoneInfo("America/New_York")).date()
+        bars = [b for b in bars if b.timestamp.astimezone(ZoneInfo("America/New_York")).date() < today]
+    except Exception as exc:
+        st.error(f"Could not load {sym} history: {exc}")
+        return
+
+    if len(bars) < 205:
+        st.warning(f"Only {len(bars)} bars; needs 205 for the 200-day regime filter.")
+        return
+
+    ind = compute_indicators([float(b.high) for b in bars],
+                            [float(b.low) for b in bars],
+                            [float(b.close) for b in bars], p)
+    sig, why = decide(ind, None, p)
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric(f"{sym} close", f"${ind.close:,.2f}")
+    c2.metric("z-score", f"{ind.z:+.2f}", f"entry <= {p.entry_z}")
+    c3.metric("RSI(2)", f"{ind.rsi:.1f}", f"entry < {p.entry_rsi:.0f}")
+    c4.metric("Signal", sig.value)
+
+    regime_ok = ind.close >= ind.sma_regime
+    st.caption(
+        f"{mode} mode. SMA20 ${ind.sma:,.2f} | SMA200 ${ind.sma_regime:,.2f} "
+        f"({'above' if regime_ok else 'BELOW'}) | ATR(14) ${ind.atr:,.2f} | "
+        f"bar {bars[-1].timestamp.astimezone(ZoneInfo('America/New_York')).date()}"
+    )
+    st.info(f"**{sig.value}** {why}")
+
+    if not regime_ok and p.allow_below_regime:
+        st.caption(f"Below the 200-day: entries run at "
+                   f"{p.below_regime_size_mult:.0%} size with a "
+                   f"{p.below_regime_atr_mult}x ATR stop instead of {p.atr_mult}x.")
+    if ind.std:
+        trigger = ind.sma + p.entry_z * ind.std
+        st.caption(f"A BUY needs a close at or below ${trigger:,.2f} "
+                   f"({(trigger / ind.close - 1) * 100:+.2f}% from here).")
 
 
 def render_sixfold_scanner():
@@ -428,8 +541,11 @@ def main():
             st.subheader("Open Orders")
             render_orders(client)
 
-            st.subheader("Vampire Engines")
+            st.subheader("Scalper (Vampire)")
             render_vampire_status()
+
+            st.subheader("Pendulum")
+            render_pendulum()
 
         with col_right:
             st.subheader("Capital Allocation")

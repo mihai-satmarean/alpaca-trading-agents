@@ -1,0 +1,25 @@
+[Unit]
+Description=ProductAdvisors Alpaca dashboard (Streamlit)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/alpaca-agent
+EnvironmentFile=/opt/alpaca-agent/.env
+# Bound to loopback deliberately. Tailscale reaches it through `tailscale
+# serve`, which proxies from the tailnet to 127.0.0.1, so the socket is never
+# exposed on a routable interface and the security group is not the only thing
+# standing between live account data and the internet.
+ExecStart=/opt/alpaca-agent/.venv/bin/python -m streamlit run dashboard/app.py \
+  --server.address 127.0.0.1 \
+  --server.port 8501 \
+  --server.headless true \
+  --browser.gatherUsageStats false
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/alpaca-agent/logs/dashboard.log
+StandardError=append:/opt/alpaca-agent/logs/dashboard.log
+
+[Install]
+WantedBy=multi-user.target

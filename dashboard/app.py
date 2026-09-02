@@ -362,6 +362,105 @@ def render_vampire_status():
     ]), hide_index=True, use_container_width=True)
 
 
+def _ntfy_live(topic: str, since: str = "12h",
+               limit: int = 40) -> tuple[list[dict], str | None]:
+    """What ntfy still holds. Returns (messages, error) and never raises.
+
+    The error is returned rather than swallowed. An earlier version caught
+    every exception and returned an empty list, so a TLS failure rendered as
+    "0 messages on ntfy" -- identical to a genuinely quiet system, and wrong
+    in the direction that hides an outage. A panel that cannot distinguish
+    "nothing was sent" from "I could not look" is worse than no panel.
+
+    Uses notify's certifi context because this Python has no system CA bundle
+    and the default context fails verification against ntfy.sh.
+    """
+    import json as _json
+    import urllib.request
+    from src.core.notify import _SSL_CTX
+    try:
+        url = f"https://ntfy.sh/{topic}/json?poll=1&since={since}"
+        with urllib.request.urlopen(url, timeout=8, context=_SSL_CTX) as r:
+            raw = r.read().decode("utf-8", "replace")
+    except Exception as exc:
+        return [], f"{type(exc).__name__}: {str(exc)[:120]}"
+    out = []
+    for line in raw.splitlines():
+        try:
+            m = _json.loads(line)
+        except Exception:
+            continue
+        if m.get("event") == "message":
+            out.append(m)
+    return list(reversed(out))[:limit], None
+
+
+def render_notifications():
+    """What the engine has been saying, and whether it arrived.
+
+    Two sources on purpose. The journal is written by notify() on every send
+    and records failures, which no delivery channel does: a silently failing
+    alert path leaves no trace and hides an outage for days. The ntfy poll is
+    the independent confirmation that a message actually landed.
+    """
+    from src.core.notify import DEFAULT_TOPIC, read_journal
+
+    cfg_topic = os.environ.get("NTFY_TOPIC", DEFAULT_TOPIC)
+    sns_on = bool(os.environ.get("SNS_TOPIC_ARN"))
+
+    st.caption(
+        f"Channel: **ntfy** topic `{cfg_topic}`. "
+        + ("SNS fan-out enabled." if sns_on else
+           "SNS fan-out is off by design: the bridge forwards to the shared live "
+           "trading topic, which would mix paper alerts into real ones.")
+    )
+
+    journal = read_journal(limit=60)
+    live, live_err = _ntfy_live(cfg_topic)
+
+    failed = [j for j in journal if not j.get("delivered")]
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Sent (journal)", len(journal))
+    c2.metric("On ntfy now", "?" if live_err else len(live),
+              help="ntfy.sh retains about 12 hours")
+    c3.metric("Failed sends", len(failed), delta=None if not failed else "check the log")
+    if failed:
+        st.error(f"{len(failed)} notification(s) failed to deliver. "
+                 "An alert that never arrives is indistinguishable from a quiet system.")
+
+    if live_err:
+        st.warning(f"Could not reach ntfy to confirm delivery ({live_err}). "
+                   "The journal below is unaffected; this only means the "
+                   "independent confirmation is unavailable right now.")
+
+    if not journal and not live and not live_err:
+        st.info("No notifications yet. The journal starts filling from the next "
+                "send; alerts fire on session-clock reports and on sleeve breaches, "
+                "not continuously.")
+        return
+
+    rows = []
+    for j in journal:
+        rows.append({
+            "When (UTC)": (j.get("ts") or "")[:19].replace("T", " "),
+            "Severity": j.get("severity", ""),
+            "Title": (j.get("title") or "")[:70],
+            "Via": j.get("transport") or "-",
+            "Delivered": "yes" if j.get("delivered") else "NO",
+        })
+    if rows:
+        st.markdown("**Send journal** (durable, includes failures)")
+        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                     height=min(320, 40 + 35 * len(rows)))
+
+    if live:
+        st.markdown("**Currently on ntfy** (last 12h, as delivered)")
+        for m in live:
+            ts = datetime.fromtimestamp(m.get("time", 0), ZoneInfo("America/New_York"))
+            with st.expander(f"{ts:%m/%d %H:%M} ET  ·  {m.get('title', '(no title)')[:80]}"):
+                st.markdown(m.get("message", ""))
+
+
 def render_pendulum():
     """Tashi's long-Treasury mean-reversion sleeve.
 
@@ -527,8 +626,10 @@ def main():
     render_account(client, tracker)
     st.divider()
 
-    tab_overview, tab_sixfold, tab_scanner, tab_history = st.tabs([
-        "Live Overview", "SIXFOLD Analysis", "Options Scanner", "Trade History"
+    (tab_overview, tab_sixfold, tab_scanner,
+     tab_notifications, tab_history) = st.tabs([
+        "Live Overview", "SIXFOLD Analysis", "Options Scanner",
+        "Notifications", "Trade History"
     ])
 
     with tab_overview:
@@ -575,6 +676,10 @@ def main():
             st.subheader("Market Snapshot")
             st.caption("Latest quotes for watchlist symbols")
             render_market_snapshot(data_svc)
+
+    with tab_notifications:
+        st.subheader("Engine Notifications")
+        render_notifications()
 
     with tab_history:
         st.subheader("Trade Log")

@@ -25,6 +25,12 @@ from src.strategies.sixfold_engine import SixfoldEngine
 from src.risk.allocation import AllocationManager, AllocationConfig
 from src.core.config import load_config
 try:
+    from theme import (inject_theme, hero_html, sparkline_svg, sleeve_cards_html,
+                       positions_table_html)
+except ImportError:
+    from dashboard.theme import (inject_theme, hero_html, sparkline_svg, sleeve_cards_html,
+                                 positions_table_html)
+try:
     from council import render_council          # streamlit puts dashboard/ on sys.path
 except ImportError:
     from dashboard.council import render_council  # tests import the package
@@ -103,7 +109,7 @@ def get_tracker():
 
 @st.cache_resource
 def get_allocator():
-    return AllocationManager(get_tracker(), AllocationConfig())
+    return AllocationManager(get_tracker(), AllocationConfig.from_config())
 
 
 @st.cache_resource
@@ -181,6 +187,62 @@ def render_account(client: AlpacaClient, tracker: PositionTracker):
         st.metric("Trades Today", tracker.trade_count_today)
 
 
+def _session_series(client):
+    """Today's equity at five-minute steps, and the prior close as baseline."""
+    try:
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+        h = client.trading.get_portfolio_history(
+            GetPortfolioHistoryRequest(period="1D", timeframe="5Min", extended_hours=False))
+        vals = [float(e) for e in (h.equity or []) if e]
+        base = float(h.base_value) if getattr(h, "base_value", None) else None
+        return vals, base
+    except Exception:
+        return [], None
+
+
+def render_hero(client: AlpacaClient, tracker: PositionTracker):
+    account = client.get_account()
+    equity = float(account.equity)
+    last = float(getattr(account, "last_equity", equity) or equity)
+    f = pnl_figures(equity, last)
+    try:
+        clock = client.get_clock()
+        is_open = bool(clock.is_open)
+        status = "Market open" if is_open else f"Closed · opens {clock.next_open.astimezone(ET):%a %H:%M} ET"
+    except Exception:
+        is_open, status = False, "Market status unavailable"
+    vals, base = _session_series(client)
+    st.markdown(hero_html(
+        equity=equity, today=f["today"], today_pct=f["today_pct"],
+        since=f["since_start"], since_pct=f["since_start_pct"],
+        market_open=is_open, status_text=status,
+        clock_text=datetime.now(ET).strftime("%H:%M ET"),
+        spark_svg=sparkline_svg(vals, baseline=base or last),
+        session_low=min(vals) if vals else None, session_high=max(vals) if vals else None,
+    ), unsafe_allow_html=True)
+
+
+def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
+    budget = allocator.get_budget()
+    cfg = load_config()
+    scal = {x.upper() for x in cfg.vampire_symbols}
+    six_used = sum(abs(float(p.get("market_value", 0.0)))
+                   for sym, p in get_tracker().get_snapshot().positions.items()
+                   if len(sym) <= 6 and sym.upper() not in scal and sym.upper() != cfg.pendulum_symbol)
+    return [
+        dict(name="SixFold", target_pct=cfg.sixfold_pct, budget=budget.sixfold_budget, used=six_used, status="active"),
+        dict(name="CSP", target_pct=cfg.options_pct, budget=budget.options_budget, used=budget.options_used, status="active"),
+        dict(name="Pendulum", target_pct=cfg.pendulum_pct, budget=budget.pendulum_budget, used=budget.pendulum_used,
+             status="active" if budget.pendulum_used > 0 else "armed"),
+        dict(name="Scalper", target_pct=cfg.vampire_pct, budget=budget.vampire_budget, used=budget.vampire_used,
+             status="retired" if cfg.vampire_pct == 0 else ("active" if not cfg.vampire_paused_until else "armed")),
+    ]
+
+
+def render_sleeves(allocator: AllocationManager):
+    st.markdown(sleeve_cards_html(_sleeve_rows(allocator)), unsafe_allow_html=True)
+
+
 def render_allocation(allocator: AllocationManager):
     """Every sleeve, not three of them.
 
@@ -201,10 +263,10 @@ def render_allocation(allocator: AllocationManager):
         and sym.upper() != cfg.pendulum_symbol
     )
     sleeves = [
-        ("SixFold",  cfg.sixfold_pct,  budget.sixfold_budget,  sixfold_used,        "#8b5cf6"),
-        ("CSP",      cfg.options_pct,  budget.options_budget,  budget.options_used, "#3b82f6"),
-        ("Pendulum", cfg.pendulum_pct, budget.pendulum_budget, budget.pendulum_used, "#14b8a6"),
-        ("Scalper",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#f97316"),
+        ("SixFold",  cfg.sixfold_pct,  budget.sixfold_budget,  sixfold_used,        "#1d1d1f"),
+        ("CSP",      cfg.options_pct,  budget.options_budget,  budget.options_used, "#503AA8"),
+        ("Pendulum", cfg.pendulum_pct, budget.pendulum_budget, budget.pendulum_used, "#8a6ff0"),
+        ("Scalper",  cfg.vampire_pct,  budget.vampire_budget,  budget.vampire_used, "#c7c7cc"),
     ]
     deployed = sum(x[3] for x in sleeves)
     idle = max(0.0, eq - deployed)
@@ -213,7 +275,7 @@ def render_allocation(allocator: AllocationManager):
         labels=[f"{n} ({u / eq * 100:.0f}%)" for n, _, _, u, _ in sleeves] + [f"Idle ({idle / eq * 100:.0f}%)"],
         values=[max(u, 0.01) for _, _, _, u, _ in sleeves] + [idle],
         hole=0.5,
-        marker_colors=[c for *_, c in sleeves] + ["#94a3b8"],
+        marker_colors=[c for *_, c in sleeves] + ["#e5e5ea"],
         textinfo="label",
     )])
     fig.update_layout(height=300, margin=dict(t=10, b=10, l=10, r=10),
@@ -314,31 +376,19 @@ def render_positions(client: AlpacaClient):
     if not positions:
         st.info("No open positions")
         return
-
+    cfg = load_config()
+    scal = {x.upper() for x in cfg.vampire_symbols}
+    from src.risk.allocation import parse_occ
     rows = []
-    total_pnl = 0.0
     for p in positions:
-        pnl = float(p.unrealized_pl)
-        total_pnl += pnl
-        rows.append({
-            "Symbol": p.symbol,
-            "Qty": float(p.qty),
-            "Side": p.side.value if hasattr(p.side, "value") else str(p.side),
-            "Avg Entry": float(p.avg_entry_price),
-            "Current": float(p.current_price),
-            "P&L": pnl,
-            "P&L %": float(p.unrealized_plpc) * 100,
-            "Mkt Value": float(p.market_value),
-        })
-
-    df = pd.DataFrame(rows)
-    df["Avg Entry"] = df["Avg Entry"].map("${:,.2f}".format)
-    df["Current"] = df["Current"].map("${:,.2f}".format)
-    df["P&L"] = df["P&L"].map("${:+,.2f}".format)
-    df["P&L %"] = df["P&L %"].map("{:+.2f}%".format)
-    df["Mkt Value"] = df["Mkt Value"].map("${:,.2f}".format)
-    st.dataframe(df, use_container_width=True, hide_index=True)
-    st.caption(f"Total unrealized P&L: ${total_pnl:+,.2f}")
+        sym = str(p.symbol).upper()
+        sleeve = ("CSP" if parse_occ(sym) else "Pendulum" if sym == cfg.pendulum_symbol
+                  else "Scalper" if sym in scal else "SixFold")
+        rows.append({"sleeve": sleeve, "symbol": p.symbol, "qty": float(p.qty),
+                     "entry": float(p.avg_entry_price), "last": float(p.current_price),
+                     "pl": float(p.unrealized_pl), "plpc": float(p.unrealized_plpc) * 100,
+                     "mv": float(p.market_value)})
+    st.markdown(positions_table_html(rows), unsafe_allow_html=True)
 
 
 def render_orders(client: AlpacaClient):
@@ -688,6 +738,7 @@ def render_sixfold_scanner():
 
 def main():
     require_token()
+    inject_theme()
     try:
         client = get_client()
         data_svc = get_data()
@@ -698,10 +749,9 @@ def main():
         st.info("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
         return
 
-    render_header(client)
-    st.divider()
-    render_account(client, tracker)
-    st.divider()
+    render_hero(client, tracker)
+    render_sleeves(allocator)
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
     (tab_overview, tab_council, tab_sixfold, tab_scanner,
      tab_notifications, tab_history) = st.tabs([
@@ -713,12 +763,12 @@ def main():
         render_council(client, allocator, tracker)
 
     with tab_overview:
+        st.subheader("Positions")
+        render_positions(client)
+        st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
         col_left, col_right = st.columns([3, 2])
 
         with col_left:
-            st.subheader("Positions")
-            render_positions(client)
-
             st.subheader("Open Orders")
             render_orders(client)
 

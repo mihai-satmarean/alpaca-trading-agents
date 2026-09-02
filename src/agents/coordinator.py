@@ -120,6 +120,25 @@ class Coordinator:
             )
 
         self._running = False
+        self._sixfold_thread: threading.Thread | None = None
+
+    def prewarm(self) -> bool:
+        """Start the SIXFOLD analyst before the market opens. Idempotent.
+
+        The analyst only reads fundamentals; it places nothing, so it is safe
+        to run outside the session. With the S&P 400 in the universe a full
+        scan is about seven minutes, and start() only runs once the market is
+        open, so without this the first executor cycles of the day would see
+        an empty candidate list and the first buys would land around 09:40.
+        Returns True if a scan thread was started by this call.
+        """
+        if self._sixfold_thread is not None and self._sixfold_thread.is_alive():
+            return False
+        self._sixfold_thread = threading.Thread(
+            target=self._sixfold_agent.run_loop, daemon=True, name="sixfold-analyst")
+        self._sixfold_thread.start()
+        log.info("SIXFOLD analyst pre-warmed (%d names)", len(self._sixfold_agent._universe))
+        return True
 
     def status(self) -> dict:
         snapshot = self._tracker.get_snapshot()
@@ -168,8 +187,8 @@ class Coordinator:
         self._running = True
         self._setup_signal_handlers()
 
-        sixfold_thread = threading.Thread(target=self._sixfold_agent.run_loop, daemon=True)
-        sixfold_thread.start()
+        # A pre-warmed analyst is already scanning; do not start a second one.
+        self.prewarm()
 
         risk_thread = threading.Thread(target=self._risk_agent.run_loop, daemon=True)
         risk_thread.start()

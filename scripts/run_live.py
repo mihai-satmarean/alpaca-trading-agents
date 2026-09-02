@@ -188,6 +188,10 @@ def main() -> int:
     # outside market hours, so it cannot wait for the open.
     threading.Thread(target=reporter, args=(coord, stop), daemon=True).start()
 
+    # Score the universe now rather than at 09:30, so the open starts with a
+    # candidate list instead of a seven-minute scan.
+    coord.prewarm()
+
     while not market_is_open():
         now = datetime.now(ET)
         if now.time() > CLOSE or now.weekday() >= 5:

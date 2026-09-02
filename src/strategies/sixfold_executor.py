@@ -57,6 +57,22 @@ class SixfoldExecutor:
         return {s.upper(): abs(float(p.get("market_value", 0.0)))
                 for s, p in snap.positions.items() if len(s) <= 6}
 
+    def _underlyings_with_short_calls(self) -> set[str]:
+        """Roots of every short call in the account. Never raises."""
+        from src.risk.allocation import parse_occ
+        out: set[str] = set()
+        try:
+            snap = self._tracker.get_snapshot()
+            for s, p in snap.positions.items():
+                occ = parse_occ(str(s).upper())
+                if occ is None or float(p.get("qty", 0) or 0) >= 0:
+                    continue
+                if str(getattr(occ, "contract_type", "")).lower().startswith("c"):
+                    out.add(str(occ.root).upper())
+        except Exception:
+            log.warning("could not read short calls; treating none as covered", exc_info=True)
+        return out
+
     def position_budget(self) -> float:
         """What one name may consume: the sleeve split N ways, capped by the
         portfolio's own per-trade limit, whichever is smaller."""
@@ -107,6 +123,7 @@ class SixfoldExecutor:
             return []
 
         held = self._held()
+        covered = self._underlyings_with_short_calls()
         sold: list[dict] = []
 
         for sym in sorted(flagged & set(held)):
@@ -114,6 +131,15 @@ class SixfoldExecutor:
                 # Another sleeve owns this ticker; selling it here would close
                 # a position this strategy never opened.
                 self._reject(sym, "flagged for disposal but owned by another sleeve")
+                continue
+            if sym in covered:
+                # A short call is written against these shares. Selling them
+                # turns a covered call into a naked one, which this account
+                # cannot hold and which has unlimited loss. The call has to be
+                # bought back first, and that is a human decision, not a
+                # scoring outcome; a fundamentals feed that returns a blank
+                # and scores the name 0 must not be able to trigger it.
+                self._reject(sym, "has a covered call open; selling the shares would leave it naked")
                 continue
 
             score_obj = None

@@ -24,6 +24,10 @@ from src.strategies.csp import CashSecuredPutStrategy
 from src.strategies.sixfold_engine import SixfoldEngine
 from src.risk.allocation import AllocationManager, AllocationConfig
 from src.core.config import load_config
+try:
+    from council import render_council          # streamlit puts dashboard/ on sys.path
+except ImportError:
+    from dashboard.council import render_council  # tests import the package
 
 load_dotenv()
 
@@ -673,11 +677,14 @@ def main():
     render_account(client, tracker)
     st.divider()
 
-    (tab_overview, tab_sixfold, tab_scanner,
+    (tab_overview, tab_council, tab_sixfold, tab_scanner,
      tab_notifications, tab_history) = st.tabs([
-        "Live Overview", "SIXFOLD Analysis", "Options Scanner",
+        "Live Overview", "AI Council", "SIXFOLD Analysis", "Options Scanner",
         "Notifications", "Trade History"
     ])
+
+    with tab_council:
+        render_council(client, allocator, tracker)
 
     with tab_overview:
         col_left, col_right = st.columns([3, 2])

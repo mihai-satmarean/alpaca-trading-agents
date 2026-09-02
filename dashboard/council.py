@@ -68,7 +68,13 @@ TOKEN_BUDGET_PCT = 3000
 RESERVE_PCT_MIN = 0.05
 NORMALIZE_TOTAL = 1.0
 CHARS_PER_TOKEN = 4
-MAX_RETRIES = 3
+# One attempt, generous timeout. A thinking model with a 4096-token budget
+# can legitimately take two to three minutes on this prompt; the old 120s
+# timeout with three retries turned every slow answer into a six-minute
+# wait that ended in an error, which is what a judge clicking the button
+# would have seen.
+MAX_RETRIES = 1
+MODEL_TIMEOUT_S = 300
 BACKOFF_BASE = 2
 RESERVE_MIN_PERCENT = 0.05
 NORMALIZE_THRESHOLD = 0.005
@@ -296,7 +302,7 @@ def _query_model(model_cfg: dict, context: str) -> dict:
         
         try:
             req = urllib.request.Request(url, data=body, headers=headers)
-            with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as resp:
+            with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_S, context=_SSL_CTX) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
             elapsed = time.monotonic() - start
             msg = data["choices"][0]["message"]

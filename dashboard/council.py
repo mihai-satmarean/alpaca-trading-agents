@@ -1,0 +1,616 @@
+"""AI Council: query financial models for portfolio strategy recommendations.
+
+Gathers current portfolio state (positions, P&L, allocation, recent trades,
+config) and sends it to multiple financial LLMs on the Dell4 k3s cluster via
+LiteLLM.  Each model returns its analysis and proposed allocation changes.
+The operator reviews side-by-side and can approve changes, which get written
+to config/strategies.yml and logged to the decision journal.
+"""
+
+from __future__ import annotations
+
+import concurrent.futures
+import copy
+import json
+import logging
+import os
+import shutil
+import ssl
+import time
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+import streamlit as st
+import yaml
+
+try:
+    import certifi
+    _SSL_CTX: ssl.SSLContext | None = ssl.create_default_context(cafile=certifi.where())
+except Exception:
+    _SSL_CTX = None
+
+log = logging.getLogger(__name__)
+
+LITELLM_K3S = os.environ.get("LITELLM_K3S_URL", "http://100.101.239.56:30400")
+LITELLM_DELL4 = os.environ.get("LITELLM_DELL4_URL", "http://100.69.81.102:4000")
+LITELLM_KEY = os.environ.get("LITELLM_KEY", "")
+
+COUNCIL_MODELS = [
+    {
+        "id": "dell4-finance",
+        "label": "Finance General (Qwen-Finance-14B)",
+        "base_url": LITELLM_K3S,
+        "max_tokens": 2048,
+    },
+    {
+        "id": "dell4-finreason",
+        "label": "FinReason (DeepSeek reasoning)",
+        "base_url": LITELLM_K3S,
+        "max_tokens": 2048,
+    },
+    {
+        "id": "dell4-fino1-14b",
+        "label": "FinO1-14B (FinGPT strongest)",
+        "base_url": LITELLM_K3S,
+        "max_tokens": 2048,
+    },
+]
+
+STRATEGIES_PATH = Path(__file__).resolve().parents[1] / "config" / "strategies.yml"
+
+SYSTEM_PROMPT = """\
+You are a quantitative portfolio advisor for an algorithmic trading system \
+running on the Alpaca paper-trading API with $100K equity.
+
+The system runs four strategies:
+1. Vampire Scalper -- bi-directional micro-scalping on liquid tickers (IOC orders)
+2. Options Income -- cash-secured puts on small-cap names
+3. SIXFOLD -- fundamental equity scoring and position building
+4. Pendulum -- mean-reversion on TLT (long-duration Treasuries)
+
+Your task: analyze the portfolio snapshot below and recommend SPECIFIC \
+allocation changes.  Format your recommendation as:
+
+## Analysis
+<2-4 sentences on what you see>
+
+## Proposed Changes
+```yaml
+allocation:
+  sixfold_pct: <float>
+  options_pct: <float>
+  vampire_pct: <float>
+  pendulum_pct: <float>
+  reserve_pct: <float>
+```
+
+## Rationale
+<Why each number changed, with reference to the data>
+
+Rules:
+- All percentages must sum to 1.00
+- Reserve must be >= 0.05 (minimum 5%)
+- Be specific: "increase vampire from 15% to 25%" not "consider increasing"
+- If the current allocation is already optimal, say so explicitly
+"""
+
+
+def _build_portfolio_context(client, allocator, tracker) -> str:
+    """Gather everything the models need to see."""
+    parts: list[str] = []
+
+    # Account summary
+    account = client.get_account()
+    equity = float(account.equity)
+    cash = float(account.cash)
+    buying_power = float(account.buying_power)
+    last_equity = float(getattr(account, "last_equity", equity) or equity)
+    daily_pnl = equity - last_equity
+
+    parts.append(f"## Account\nEquity: ${equity:,.2f}\nCash: ${cash:,.2f}\n"
+                 f"Buying Power: ${buying_power:,.2f}\n"
+                 f"Daily P&L: ${daily_pnl:+,.2f} ({daily_pnl / last_equity * 100:+.2f}%)")
+
+    # Allocation vs budget
+    budget = allocator.get_budget()
+    parts.append(
+        f"\n## Current Allocation (config)\n"
+        f"SIXFOLD: {allocator.config.sixfold_pct * 100:.0f}% "
+        f"(${budget.sixfold_budget:,.0f} budget)\n"
+        f"Options: {allocator.config.options_pct * 100:.0f}% "
+        f"(${budget.options_budget:,.0f} budget, ${budget.options_used:,.0f} used)\n"
+        f"Vampire: {allocator.config.vampire_pct * 100:.0f}% "
+        f"(${budget.vampire_budget:,.0f} budget, ${budget.vampire_used:,.0f} used)\n"
+        f"Pendulum: {allocator.config.pendulum_pct * 100:.0f}% "
+        f"(${budget.pendulum_budget:,.0f} budget, ${budget.pendulum_used:,.0f} used)\n"
+        f"Reserve: {allocator.config.reserve_pct * 100:.0f}% "
+        f"(${budget.reserve_target:,.0f} target)\n"
+        f"Unattributed: ${budget.unattributed_used:,.0f}"
+    )
+
+    # Positions
+    positions = client.get_positions()
+    if positions:
+        pos_lines = ["## Open Positions"]
+        total_unrealized = 0.0
+        for p in positions:
+            pnl = float(p.unrealized_pl)
+            total_unrealized += pnl
+            side = p.side.value if hasattr(p.side, "value") else str(p.side)
+            pos_lines.append(
+                f"  {p.symbol}: {float(p.qty):.0f} {side} @ ${float(p.avg_entry_price):.2f} "
+                f"-> ${float(p.current_price):.2f} (P&L: ${pnl:+,.2f})"
+            )
+        pos_lines.append(f"  Total unrealized: ${total_unrealized:+,.2f}")
+        parts.append("\n".join(pos_lines))
+    else:
+        parts.append("\n## Open Positions\nNone")
+
+    # Recent trades from the decision log
+    from src.core.decision_log import recent
+    trades = recent(limit=80)
+    trade_events = [t for t in trades if t.get("event") in
+                    {"long_entry", "short_entry", "long_exit", "short_exit", "order", "tick"}]
+
+    if trade_events:
+        # Summarize by agent
+        agent_counts: dict[str, int] = {}
+        agent_pnl: dict[str, float] = {}
+        for t in trade_events:
+            agent = t.get("agent", "unknown")
+            agent_counts[agent] = agent_counts.get(agent, 0) + 1
+            pnl_val = t.get("realized_pnl") or t.get("pnl") or 0
+            if isinstance(pnl_val, (int, float)):
+                agent_pnl[agent] = agent_pnl.get(agent, 0) + float(pnl_val)
+
+        trade_lines = ["\n## Recent Trade Activity (last 80 decisions)"]
+        for agent in sorted(agent_counts):
+            pnl = agent_pnl.get(agent, 0)
+            trade_lines.append(f"  {agent}: {agent_counts[agent]} events, "
+                               f"realized P&L: ${pnl:+,.2f}")
+        parts.append("\n".join(trade_lines))
+
+    # Strategy config highlights
+    parts.append(
+        f"\n## Vampire Config\n"
+        f"Symbols: QQQ, TQQQ (HOOD, SPY removed for negative P&L)\n"
+        f"Tick threshold: 0.02, Position size: 10, Max position: 100\n"
+        f"Max daily loss: $200, Paused until: 2026-09-02"
+    )
+
+    return "\n\n".join(parts)
+
+
+def _query_model(model_cfg: dict, context: str) -> dict:
+    """Send the portfolio context to one LLM and return its response."""
+    base_url = model_cfg["base_url"].rstrip("/")
+    url = f"{base_url}/v1/chat/completions"
+
+    payload = {
+        "model": model_cfg["id"],
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": context},
+        ],
+        "max_tokens": model_cfg["max_tokens"],
+        "temperature": 0.3,
+    }
+    headers = {"Content-Type": "application/json"}
+    if LITELLM_KEY:
+        headers["Authorization"] = f"Bearer {LITELLM_KEY}"
+
+    body = json.dumps(payload).encode()
+    start = time.monotonic()
+
+    try:
+        req = urllib.request.Request(url, data=body, headers=headers)
+        with urllib.request.urlopen(req, timeout=120, context=_SSL_CTX) as resp:
+            data = json.loads(resp.read().decode("utf-8", errors="replace"))
+        elapsed = time.monotonic() - start
+        content = data["choices"][0]["message"]["content"]
+        return {
+            "model": model_cfg["id"],
+            "label": model_cfg["label"],
+            "content": content,
+            "elapsed_s": round(elapsed, 1),
+            "error": None,
+        }
+    except Exception as exc:
+        elapsed = time.monotonic() - start
+        return {
+            "model": model_cfg["id"],
+            "label": model_cfg["label"],
+            "content": "",
+            "elapsed_s": round(elapsed, 1),
+            "error": str(exc),
+        }
+
+
+def _parse_yaml_block(text: str) -> dict | None:
+    """Extract allocation from model output, tolerating format variations.
+
+    Models may use different key names (sixfold vs sixfold_pct), percentage
+    formats (30% vs 0.30 vs 30), or wrapper keys (equity_allocation vs
+    allocation).  We normalize everything to {key_pct: float_0_to_1}.
+    """
+    import re
+
+    # Try fenced YAML block first
+    m = re.search(r"```(?:yaml)?\s*\n(.*?)```", text, re.DOTALL)
+    raw_yaml = m.group(1) if m else None
+
+    if not raw_yaml:
+        # Try inline allocation block
+        m = re.search(r"(\w*allocation\w*:\s*\n(?:\s+\w+:\s*[\d.%]+\n?)+)", text, re.I)
+        raw_yaml = m.group(1) if m else None
+
+    if not raw_yaml:
+        return None
+
+    try:
+        parsed = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError:
+        return None
+
+    if not isinstance(parsed, dict):
+        return None
+
+    # Unwrap nested keys like equity_allocation, allocation, etc.
+    inner = parsed
+    for key in list(parsed.keys()):
+        if "alloc" in key.lower() and isinstance(parsed[key], dict):
+            inner = parsed[key]
+            break
+
+    # Normalize keys and values
+    KEY_MAP = {
+        "sixfold": "sixfold_pct",
+        "sixfold_pct": "sixfold_pct",
+        "options": "options_pct",
+        "options_pct": "options_pct",
+        "vampire": "vampire_pct",
+        "vampire_pct": "vampire_pct",
+        "pendulum": "pendulum_pct",
+        "pendulum_pct": "pendulum_pct",
+        "reserve": "reserve_pct",
+        "reserve_pct": "reserve_pct",
+    }
+
+    result = {}
+    for k, v in inner.items():
+        canonical = KEY_MAP.get(k.lower().strip())
+        if not canonical:
+            continue
+        # Parse value: "30%" -> 0.30, 30 -> 0.30, 0.30 -> 0.30
+        s = str(v).strip().rstrip("%")
+        try:
+            num = float(s)
+        except ValueError:
+            continue
+        if num > 1.0:
+            num = num / 100.0
+        result[canonical] = round(num, 2)
+
+    required = {"sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"}
+    if required.issubset(result.keys()):
+        return result
+    return None
+
+
+def _validate_allocation(alloc: dict) -> tuple[bool, str]:
+    """Check that an allocation dict is valid."""
+    required = {"sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"}
+    if not required.issubset(alloc.keys()):
+        return False, f"Missing keys: {required - set(alloc.keys())}"
+
+    total = sum(float(alloc[k]) for k in required)
+    if abs(total - 1.0) > 0.02:
+        return False, f"Percentages sum to {total:.2f}, not 1.00"
+
+    if float(alloc.get("reserve_pct", 0)) < 0.05:
+        return False, "Reserve must be >= 5%"
+
+    for k in required:
+        v = float(alloc[k])
+        if v < 0 or v > 1:
+            return False, f"{k}={v} is out of range [0, 1]"
+
+    return True, "OK"
+
+
+def _apply_allocation(new_alloc: dict) -> tuple[bool, str]:
+    """Write new allocation percentages to strategies.yml with backup."""
+    if not STRATEGIES_PATH.exists():
+        return False, f"Config not found: {STRATEGIES_PATH}"
+
+    backup = STRATEGIES_PATH.with_suffix(f".yml.bak.{int(time.time())}")
+    shutil.copy2(STRATEGIES_PATH, backup)
+
+    raw = STRATEGIES_PATH.read_text(encoding="utf-8")
+    full = yaml.safe_load(raw)
+    full["allocation"] = {
+        "sixfold_pct": round(float(new_alloc["sixfold_pct"]), 2),
+        "options_pct": round(float(new_alloc["options_pct"]), 2),
+        "vampire_pct": round(float(new_alloc["vampire_pct"]), 2),
+        "pendulum_pct": round(float(new_alloc["pendulum_pct"]), 2),
+        "reserve_pct": round(float(new_alloc["reserve_pct"]), 2),
+    }
+
+    # Preserve comments by doing a targeted replacement in the raw text
+    import re
+    alloc_pattern = re.compile(
+        r"(allocation:\s*\n)"
+        r"(\s+sixfold_pct:\s*[\d.]+.*\n)"
+        r"(\s+options_pct:\s*[\d.]+.*\n)"
+        r"(\s+vampire_pct:\s*[\d.]+.*\n)"
+        r"(\s+pendulum_pct:\s*[\d.]+.*\n)"
+        r"(\s+reserve_pct:\s*[\d.]+.*\n)",
+    )
+
+    replacement = (
+        f"allocation:\n"
+        f"  sixfold_pct: {full['allocation']['sixfold_pct']}      "
+        f"# was {_read_current_alloc().get('sixfold_pct', '?')}, "
+        f"changed by AI Council {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
+        f"  options_pct: {full['allocation']['options_pct']}      "
+        f"# was {_read_current_alloc().get('options_pct', '?')}\n"
+        f"  vampire_pct: {full['allocation']['vampire_pct']}      "
+        f"# was {_read_current_alloc().get('vampire_pct', '?')}\n"
+        f"  pendulum_pct: {full['allocation']['pendulum_pct']}      "
+        f"# was {_read_current_alloc().get('pendulum_pct', '?')}\n"
+        f"  reserve_pct: {full['allocation']['reserve_pct']}      "
+        f"# minimum 5%\n"
+    )
+
+    new_raw = alloc_pattern.sub(replacement, raw)
+    if new_raw == raw:
+        # Fallback: write the whole file via YAML
+        STRATEGIES_PATH.write_text(yaml.dump(full, default_flow_style=False), encoding="utf-8")
+    else:
+        STRATEGIES_PATH.write_text(new_raw, encoding="utf-8")
+
+    # Record in decision log
+    from src.core.decision_log import record
+    record(
+        "council",
+        "council_approved",
+        thought="AI Council recommendation approved by operator",
+        decision=json.dumps(full["allocation"]),
+        backup=str(backup),
+    )
+
+    # Notify via ntfy
+    from src.core.notify import notify
+    summary = ", ".join(f"{k}: {v}" for k, v in full["allocation"].items())
+    notify(
+        "Council Approved",
+        f"New allocation applied: {summary}",
+        severity="high",
+        tags=["council", "rebalance"],
+    )
+
+    return True, f"Applied. Backup at {backup.name}"
+
+
+def _read_current_alloc() -> dict:
+    """Read current allocation from strategies.yml."""
+    if not STRATEGIES_PATH.exists():
+        return {}
+    try:
+        full = yaml.safe_load(STRATEGIES_PATH.read_text(encoding="utf-8"))
+        return full.get("allocation", {})
+    except Exception:
+        return {}
+
+
+def _diff_table(current: dict, proposed: dict) -> list[dict]:
+    """Build a comparison table between current and proposed allocation."""
+    keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+    labels = {
+        "sixfold_pct": "SIXFOLD",
+        "options_pct": "Options (CSP)",
+        "vampire_pct": "Vampire Scalper",
+        "pendulum_pct": "Pendulum (TLT)",
+        "reserve_pct": "Reserve",
+    }
+    rows = []
+    for k in keys:
+        cur = float(current.get(k, 0))
+        new = float(proposed.get(k, 0))
+        delta = new - cur
+        rows.append({
+            "Strategy": labels.get(k, k),
+            "Current": f"{cur * 100:.0f}%",
+            "Proposed": f"{new * 100:.0f}%",
+            "Delta": f"{delta * 100:+.0f}pp",
+        })
+    return rows
+
+
+# ---------------------------------------------------------------------------
+# Streamlit rendering
+# ---------------------------------------------------------------------------
+
+def render_council(client, allocator, tracker) -> None:
+    """Main entry point for the AI Council tab."""
+
+    st.subheader("AI Financial Council")
+    st.caption(
+        "Query 3 financial AI models on Dell4 with the live portfolio state. "
+        "Each model proposes allocation changes independently. "
+        "Review their recommendations and approve if you agree."
+    )
+
+    # Show current allocation
+    current = _read_current_alloc()
+    if current:
+        cols = st.columns(5)
+        labels = ["SIXFOLD", "Options", "Vampire", "Pendulum", "Reserve"]
+        keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+        for col, label, key in zip(cols, labels, keys):
+            val = current.get(key, 0)
+            col.metric(label, f"{float(val) * 100:.0f}%")
+
+    st.divider()
+
+    # Consultation trigger
+    col_btn, col_status = st.columns([1, 3])
+    with col_btn:
+        consult = st.button("Consult AI Council", type="primary", use_container_width=True)
+    with col_status:
+        if "council_last_run" in st.session_state:
+            st.caption(f"Last consulted: {st.session_state['council_last_run']}")
+
+    if consult:
+        with st.spinner("Gathering portfolio context..."):
+            context = _build_portfolio_context(client, allocator, tracker)
+
+        st.session_state["council_context"] = context
+        st.session_state["council_last_run"] = datetime.now(timezone.utc).strftime(
+            "%Y-%m-%d %H:%M UTC"
+        )
+
+        # Show what the models will see
+        with st.expander("Portfolio context sent to models", expanded=False):
+            st.code(context, language="markdown")
+
+        # Query all models
+        results = []
+        with st.spinner("Querying 3 financial models (this takes 30-90 seconds)..."):
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+                futures = {pool.submit(_query_model, m, context): m for m in COUNCIL_MODELS}
+                for future in concurrent.futures.as_completed(futures):
+                    results.append(future.result())
+
+        st.session_state["council_results"] = results
+        st.session_state["council_proposals"] = []
+
+        # Parse proposals from each
+        proposals = []
+        for r in results:
+            if r["error"]:
+                continue
+            alloc = _parse_yaml_block(r["content"])
+            if alloc:
+                valid, msg = _validate_allocation(alloc)
+                if valid:
+                    proposals.append({"model": r["model"], "label": r["label"], "alloc": alloc})
+        st.session_state["council_proposals"] = proposals
+
+    # Display results if available
+    if "council_results" in st.session_state:
+        _render_results(st.session_state["council_results"])
+
+    # Approval workflow
+    if "council_proposals" in st.session_state and st.session_state["council_proposals"]:
+        _render_approval(st.session_state["council_proposals"], current)
+
+
+def _render_results(results: list[dict]) -> None:
+    """Display model responses as expandable cards."""
+    st.subheader("Model Recommendations")
+
+    for r in results:
+        status = "ERROR" if r["error"] else f"{r['elapsed_s']}s"
+        with st.expander(f"{r['label']} ({status})", expanded=not r["error"]):
+            if r["error"]:
+                st.error(f"Model query failed: {r['error']}")
+            else:
+                st.markdown(r["content"])
+
+
+def _render_approval(proposals: list[dict], current: dict) -> None:
+    """Approval workflow: select a proposal, review diff, approve/reject."""
+    st.divider()
+    st.subheader("Approve Allocation Change")
+
+    if len(proposals) == 1:
+        selected_idx = 0
+        st.info(f"One valid proposal from **{proposals[0]['label']}**")
+    else:
+        options = [f"{p['label']}" for p in proposals]
+        options.append("Average of all models")
+        choice = st.radio("Select proposal to apply:", options, horizontal=True)
+        if choice == "Average of all models":
+            selected_idx = -1
+        else:
+            selected_idx = options.index(choice)
+
+    # Build the proposed allocation
+    if selected_idx == -1:
+        avg_alloc = {}
+        keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+        for k in keys:
+            vals = [float(p["alloc"][k]) for p in proposals]
+            avg_alloc[k] = round(sum(vals) / len(vals), 2)
+        # Normalize to exactly 1.0
+        total = sum(avg_alloc.values())
+        if total != 1.0:
+            avg_alloc["reserve_pct"] = round(avg_alloc["reserve_pct"] + (1.0 - total), 2)
+        proposed = avg_alloc
+        st.caption("Averaging recommendations from all models")
+    else:
+        proposed = proposals[selected_idx]["alloc"]
+
+    # Show diff table
+    import pandas as pd
+    diff = _diff_table(current, proposed)
+    st.dataframe(pd.DataFrame(diff), use_container_width=True, hide_index=True)
+
+    # Editable overrides
+    with st.expander("Manual adjustments (optional)", expanded=False):
+        adjusted = {}
+        keys = ["sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"]
+        labels = {
+            "sixfold_pct": "SIXFOLD %",
+            "options_pct": "Options %",
+            "vampire_pct": "Vampire %",
+            "pendulum_pct": "Pendulum %",
+            "reserve_pct": "Reserve %",
+        }
+        edit_cols = st.columns(5)
+        for col, k in zip(edit_cols, keys):
+            val = float(proposed.get(k, 0)) * 100
+            adjusted[k] = col.number_input(
+                labels[k], min_value=0.0, max_value=100.0,
+                value=val, step=5.0, key=f"council_edit_{k}",
+            ) / 100.0
+
+        adj_total = sum(adjusted.values())
+        if abs(adj_total - 1.0) > 0.01:
+            st.warning(f"Adjusted percentages sum to {adj_total * 100:.0f}%, should be 100%")
+        else:
+            proposed = adjusted
+
+    # Approve / Reject
+    col_approve, col_reject, col_space = st.columns([1, 1, 2])
+    with col_approve:
+        if st.button("Approve & Apply", type="primary", use_container_width=True):
+            valid, msg = _validate_allocation(proposed)
+            if not valid:
+                st.error(f"Invalid allocation: {msg}")
+            else:
+                ok, detail = _apply_allocation(proposed)
+                if ok:
+                    st.success(f"Allocation updated. {detail}")
+                    st.balloons()
+                    # Clear session state so UI refreshes
+                    for key in ["council_results", "council_proposals"]:
+                        st.session_state.pop(key, None)
+                else:
+                    st.error(f"Failed to apply: {detail}")
+
+    with col_reject:
+        if st.button("Reject", use_container_width=True):
+            from src.core.decision_log import record
+            record(
+                "council",
+                "council_rejected",
+                thought="Operator rejected AI Council recommendation",
+                decision=json.dumps(proposed),
+            )
+            st.info("Recommendation rejected and logged.")
+            for key in ["council_results", "council_proposals"]:
+                st.session_state.pop(key, None)

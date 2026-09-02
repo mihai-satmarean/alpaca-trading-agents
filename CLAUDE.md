@@ -57,3 +57,49 @@ pytest                             # Run tests
   }
 }
 ```
+
+## Ruflo + Hermes Bridge (Multi-Agent Orchestration)
+
+This project uses **Ruflo** for multi-agent swarm coordination and **Hermes Agent** for native Devstral coding tasks via a bridge script.
+
+### Configuration already in place
+
+- `.ruflo.json` -- models, routing, swarm topology, and Hermes bridge config
+- `~/.hermes/bin/ruflo-hermes-bridge` -- delegates coding tasks to Hermes Agent
+- `~/.hermes/config.yaml` -- Hermes Agent model config (dell4-devstral via LiteLLM)
+
+### How to use Ruflo from this project
+
+```bash
+# Initialize swarm (already done -- skip if .swarm/state.json exists)
+npx ruflo@latest swarm init --topology hierarchical --max-agents 5 --strategy specialized
+
+# Run a development swarm on a specific task
+npx ruflo@latest swarm run --objective "Fix vampire_engine.py async bugs" --strategy development
+
+# Delegate a coding task directly to Hermes (bypasses Ruflo, uses Devstral natively)
+~/.hermes/bin/ruflo-hermes-bridge "implement shadow mode for vampire engine" .
+
+# Memory operations
+npx ruflo@latest memory store --content "vampire: order-in-flight guard verified" --tags "vampire,fix"
+npx ruflo@latest memory search --query "vampire bugs"
+```
+
+### Agent routing (from .ruflo.json)
+
+| Role | Model | Purpose |
+|------|-------|---------|
+| researcher | dell4-fast (Qwen3.8-27B) | Triage, quick research |
+| architect | dell4-chat (Qwen3.6-35B-A3B) | Planning, design |
+| coder | dell4-coder (Qwen3-Coder-30B-A3B) | Implementation |
+| reviewer | dell4-devstral (Devstral-Small-2-24B) | Code review (model diversity) |
+| tester | dell4-coder | QA |
+
+### Hermes bridge
+
+Coding tasks (`implement`, `code`, `fix-bug`, `refactor`) are delegated to Hermes Agent which runs Devstral natively -- no LiteLLM message-ordering issues. The bridge is at `~/.hermes/bin/ruflo-hermes-bridge`.
+
+### Tracking
+
+Bugs, progress, and design decisions are tracked in GitHub Issues and GitLab wikis -- not here.
+Consult the issue tracker and wiki before starting work to get current state.

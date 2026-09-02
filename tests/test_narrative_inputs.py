@@ -86,12 +86,12 @@ class TestVampireReportsItsActivity:
         summary = a.activity_summary()
         assert {row["symbol"] for row in summary} == {"SPY", "QQQ"}
 
-    def test_summary_reports_trades_and_position(self):
+    async def test_summary_reports_trades_and_position(self):
         a = self._agent(["SPY"])
         e = a._engines["SPY"]
         e._is_market_hours = lambda: True
         e.cfg.max_notional = None
-        e.tick(699.0, vwap=700.0)          # opens a long
+        await e.tick(699.0, vwap=700.0)          # opens a long
         row = a.activity_summary()[0]
         assert row["trades"] >= 1
         assert row["net_position"] != 0

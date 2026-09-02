@@ -90,40 +90,40 @@ class TestTheRefusalIsParsed:
 
 
 class TestTheEngineAdoptsBrokerTruth:
-    def test_an_oversized_cover_is_resized_and_succeeds(self):
+    async def test_an_oversized_cover_is_resized_and_succeeds(self):
         """The exact deadlock: believes it is short 12, actually short 9."""
         e, client = _engine([Refused(HOOD_BODY), _order("filled", "9")])
         e._net_position = -12
 
-        filled = e._submit(10, 100.0, OrderSide.BUY)
+        filled = await e._submit(10, 100.0, OrderSide.BUY)
 
         assert filled == 9, "the retry at the venue's size must fill"
         assert [c.args[1] for c in client.market_order.call_args_list] == [10, 9], \
             "first attempt 10 refused, second attempt resized to 9"
 
-    def test_the_counter_is_corrected_to_the_venue_number(self):
+    async def test_the_counter_is_corrected_to_the_venue_number(self):
         """_submit adopts the true position; the caller applies the fill to it."""
         e, _ = _engine([Refused(HOOD_BODY), _order("filled", "9")])
         e._net_position = -12
-        e._submit(10, 100.0, OrderSide.BUY)
+        await e._submit(10, 100.0, OrderSide.BUY)
         assert e._net_position == -9, "the phantom 3 shares are gone"
 
-    def test_correction_preserves_the_side_of_the_position(self):
+    async def test_correction_preserves_the_side_of_the_position(self):
         """A long that over-states itself must not be flipped short."""
         e, _ = _engine([Refused(HOOD_BODY), _order("filled", "9")])
         e._net_position = 12
-        e._submit(10, 100.0, OrderSide.SELL)
+        await e._submit(10, 100.0, OrderSide.SELL)
         assert e._net_position == 9
 
-    def test_a_correct_counter_is_left_alone(self):
+    async def test_a_correct_counter_is_left_alone(self):
         """Adoption fires only on disagreement, so a wash-trade refusal on an
         accurate counter must not perturb it."""
         e, _ = _engine([Refused(WASH_BODY)])
         e._net_position = -9
-        e._submit(9, 100.0, OrderSide.BUY)
+        await e._submit(9, 100.0, OrderSide.BUY)
         assert e._net_position == -9
 
-    def test_the_deadlock_clears_end_to_end(self):
+    async def test_the_deadlock_clears_end_to_end(self):
         """The whole point: a tick that could never cover now covers.
 
         Believes it is short 12 while holding 9. Before the fix this asked for
@@ -135,36 +135,36 @@ class TestTheEngineAdoptsBrokerTruth:
         e._avg_entry = 100.0
         e._last_fill_price = 100.0
 
-        e.tick(99.90)   # price down against a short: cover
+        await e.tick(99.90)   # price down against a short: cover
 
         assert e._net_position == 0, "flat, not deadlocked"
         assert client.market_order.call_count == 2
 
-    def test_it_retries_once_not_forever(self):
+    async def test_it_retries_once_not_forever(self):
         """Two refusals in a row must stop, or the loop is back."""
         e, client = _engine([Refused(HOOD_BODY), Refused(HOOD_BODY)])
         e._net_position = -12
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 0
         assert client.market_order.call_count == 2
 
-    def test_a_wash_trade_refusal_is_not_retried(self):
+    async def test_a_wash_trade_refusal_is_not_retried(self):
         """No quantity to resize to; resending the same order just repeats it."""
         e, client = _engine([Refused(WASH_BODY)])
         e._net_position = -9
-        assert e._submit(9, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(9, 100.0, OrderSide.BUY) == 0
         assert client.market_order.call_count == 1
 
-    def test_available_zero_is_not_submitted(self):
+    async def test_available_zero_is_not_submitted(self):
         """Nothing sendable means send nothing, not an order for zero shares."""
         body = HOOD_BODY.replace('"available":"9"', '"available":"0"')
         e, client = _engine([Refused(body)])
         e._net_position = -9
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 0
         assert client.market_order.call_count == 1
 
 
 class TestRefusalsCostBudget:
-    def test_a_refusal_consumes_rate_limit_the_way_a_fill_does(self):
+    async def test_a_refusal_consumes_rate_limit_the_way_a_fill_does(self):
         """The hole that let 4,700 through a 20-per-minute limit.
 
         Only _record_bleed appended to the limiter, and a refused order never
@@ -173,34 +173,34 @@ class TestRefusalsCostBudget:
         e, _ = _engine([Refused(WASH_BODY)] * 30)
         e._net_position = -9
         for _ in range(20):
-            e._submit(9, 100.0, OrderSide.BUY)
+            await e._submit(9, 100.0, OrderSide.BUY)
         assert not e._check_rate_limit(), "20 refusals must exhaust a 20/min budget"
 
-    def test_a_streak_parks_the_symbol(self):
+    async def test_a_streak_parks_the_symbol(self):
         e, _ = _engine([Refused(WASH_BODY)] * 30)
         e._net_position = -9
         for _ in range(VampireEngine.REJECT_STREAK_TRIP):
-            e._submit(9, 100.0, OrderSide.BUY)
+            await e._submit(9, 100.0, OrderSide.BUY)
         assert e._reject_cooldown_until > time.time()
 
-    def test_a_parked_symbol_submits_nothing(self):
+    async def test_a_parked_symbol_submits_nothing(self):
         e, client = _engine([_order("filled", "10")])
         e._reject_cooldown_until = time.time() + 60
-        e.tick(100.0)
+        await e.tick(100.0)
         assert client.market_order.call_count == 0, "cooldown must reach the venue call"
 
-    def test_backoff_is_bounded(self):
+    async def test_backoff_is_bounded(self):
         e, _ = _engine([Refused(WASH_BODY)] * 200)
         e._net_position = -9
         for _ in range(60):
-            e._submit(9, 100.0, OrderSide.BUY)
+            await e._submit(9, 100.0, OrderSide.BUY)
         assert e._reject_cooldown_until - time.time() <= VampireEngine.REJECT_BACKOFF_MAX + 1
 
-    def test_an_accepted_order_clears_the_streak(self):
+    async def test_an_accepted_order_clears_the_streak(self):
         e, _ = _engine([Refused(WASH_BODY), Refused(WASH_BODY), _order("filled", "9")])
         e._net_position = -9
-        e._submit(9, 100.0, OrderSide.BUY)
-        e._submit(9, 100.0, OrderSide.BUY)
+        await e._submit(9, 100.0, OrderSide.BUY)
+        await e._submit(9, 100.0, OrderSide.BUY)
         assert e._reject_streak == 2
-        e._submit(9, 100.0, OrderSide.BUY)
+        await e._submit(9, 100.0, OrderSide.BUY)
         assert e._reject_streak == 0

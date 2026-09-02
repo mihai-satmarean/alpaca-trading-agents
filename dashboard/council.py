@@ -108,10 +108,11 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
     buying_power = float(account.buying_power)
     last_equity = float(getattr(account, "last_equity", equity) or equity)
     daily_pnl = equity - last_equity
+    pnl_pct = (daily_pnl / last_equity * 100) if last_equity > 0 else 0.0
 
     parts.append(f"## Account\nEquity: ${equity:,.2f}\nCash: ${cash:,.2f}\n"
                  f"Buying Power: ${buying_power:,.2f}\n"
-                 f"Daily P&L: ${daily_pnl:+,.2f} ({daily_pnl / last_equity * 100:+.2f}%)")
+                 f"Daily P&L: ${daily_pnl:+,.2f} ({pnl_pct:+.2f}%)")
 
     # Allocation vs budget
     budget = allocator.get_budget()
@@ -148,14 +149,17 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
     else:
         parts.append("\n## Open Positions\nNone")
 
-    # Recent trades from the decision log
+    # Recent trades from the decision log -- individual details with token budget
     from src.core.decision_log import recent
-    trades = recent(limit=80)
-    trade_events = [t for t in trades if t.get("event") in
-                    {"long_entry", "short_entry", "long_exit", "short_exit", "order", "tick"}]
+    TRADE_EVENTS = {"long_entry", "short_entry", "long_exit", "short_exit", "order"}
+    TOKEN_BUDGET = 3000
+    CHARS_PER_TOKEN = 4
+
+    trades = recent(limit=500)
+    trade_events = [t for t in trades if t.get("event") in TRADE_EVENTS]
 
     if trade_events:
-        # Summarize by agent
+        # Summary by agent first (always included)
         agent_counts: dict[str, int] = {}
         agent_pnl: dict[str, float] = {}
         for t in trade_events:
@@ -165,19 +169,57 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
             if isinstance(pnl_val, (int, float)):
                 agent_pnl[agent] = agent_pnl.get(agent, 0) + float(pnl_val)
 
-        trade_lines = ["\n## Recent Trade Activity (last 80 decisions)"]
+        summary_lines = [f"\n## Trade Summary ({len(trade_events)} trades)"]
         for agent in sorted(agent_counts):
             pnl = agent_pnl.get(agent, 0)
-            trade_lines.append(f"  {agent}: {agent_counts[agent]} events, "
-                               f"realized P&L: ${pnl:+,.2f}")
-        parts.append("\n".join(trade_lines))
+            summary_lines.append(f"  {agent}: {agent_counts[agent]} trades, "
+                                 f"realized P&L: ${pnl:+,.2f}")
+        parts.append("\n".join(summary_lines))
 
-    # Strategy config highlights
+        # Individual trade log (newest first, token-budgeted)
+        detail_lines = ["\n## Individual Trades (newest first)"]
+        chars_used = 0
+        max_chars = TOKEN_BUDGET * CHARS_PER_TOKEN
+        included = 0
+        for t in reversed(trade_events):
+            ts = t.get("ts", "?")
+            if "T" in str(ts):
+                ts = str(ts).split("T")[1][:8]
+            agent = t.get("agent", "?")
+            event = t.get("event", "?")
+            sym = t.get("symbol", "?")
+            qty = t.get("qty", "?")
+            price = t.get("price")
+            price_s = f"${float(price):.2f}" if price else "?"
+            thought = t.get("thought", "")
+            if len(thought) > 80:
+                thought = thought[:77] + "..."
+            line = f"  {ts} {agent}/{event} {sym} x{qty} @{price_s}"
+            if thought:
+                line += f"  [{thought}]"
+            chars_used += len(line) + 1
+            if chars_used > max_chars:
+                detail_lines.append(
+                    f"  ... {len(trade_events) - included} older trades omitted "
+                    f"(token budget: ~{TOKEN_BUDGET} tokens)")
+                break
+            detail_lines.append(line)
+            included += 1
+        parts.append("\n".join(detail_lines))
+
+    # Strategy config highlights (read from live config, not hardcoded)
+    from src.core.config import load_config as _load_strategy_config
+    scfg = _load_strategy_config()
+    v = scfg.vampire
+    pause = scfg.vampire_paused_until or "not paused"
     parts.append(
         f"\n## Vampire Config\n"
-        f"Symbols: QQQ, TQQQ (HOOD, SPY removed for negative P&L)\n"
-        f"Tick threshold: 0.02, Position size: 10, Max position: 100\n"
-        f"Max daily loss: $200, Paused until: 2026-09-02"
+        f"Symbols: {', '.join(scfg.vampire_symbols) or 'none'}\n"
+        f"Tick threshold: {v.get('tick_threshold', 0.02)}, "
+        f"Position size: {v.get('position_size', 10)}, "
+        f"Max position: {v.get('max_position', 100)}\n"
+        f"Max daily loss: ${v.get('max_daily_loss', 200)}, "
+        f"Paused until: {pause}"
     )
 
     return "\n\n".join(parts)
@@ -299,6 +341,25 @@ def _parse_yaml_block(text: str) -> dict | None:
     return None
 
 
+def _normalize_allocation(alloc: dict) -> dict:
+    """Auto-normalize allocations that are close but don't sum to 1.0.
+
+    Models often produce totals like 1.05 or 0.95 due to rounding.
+    If the total is within [0.90, 1.10], scale proportionally to 1.0.
+    """
+    required = {"sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"}
+    if not required.issubset(alloc.keys()):
+        return alloc
+    total = sum(float(alloc[k]) for k in required)
+    if abs(total - 1.0) < 0.005:
+        return alloc
+    if 0.90 <= total <= 1.10:
+        factor = 1.0 / total
+        return {k: round(float(v) * factor, 2) if k in required else v
+                for k, v in alloc.items()}
+    return alloc
+
+
 def _validate_allocation(alloc: dict) -> tuple[bool, str]:
     """Check that an allocation dict is valid."""
     required = {"sixfold_pct", "options_pct", "vampire_pct", "pendulum_pct", "reserve_pct"}
@@ -349,17 +410,18 @@ def _apply_allocation(new_alloc: dict) -> tuple[bool, str]:
         r"(\s+reserve_pct:\s*[\d.]+.*\n)",
     )
 
+    prev = _read_current_alloc()
     replacement = (
         f"allocation:\n"
         f"  sixfold_pct: {full['allocation']['sixfold_pct']}      "
-        f"# was {_read_current_alloc().get('sixfold_pct', '?')}, "
+        f"# was {prev.get('sixfold_pct', '?')}, "
         f"changed by AI Council {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}\n"
         f"  options_pct: {full['allocation']['options_pct']}      "
-        f"# was {_read_current_alloc().get('options_pct', '?')}\n"
+        f"# was {prev.get('options_pct', '?')}\n"
         f"  vampire_pct: {full['allocation']['vampire_pct']}      "
-        f"# was {_read_current_alloc().get('vampire_pct', '?')}\n"
+        f"# was {prev.get('vampire_pct', '?')}\n"
         f"  pendulum_pct: {full['allocation']['pendulum_pct']}      "
-        f"# was {_read_current_alloc().get('pendulum_pct', '?')}\n"
+        f"# was {prev.get('pendulum_pct', '?')}\n"
         f"  reserve_pct: {full['allocation']['reserve_pct']}      "
         f"# minimum 5%\n"
     )
@@ -472,8 +534,12 @@ def render_council(client, allocator, tracker) -> None:
             "%Y-%m-%d %H:%M UTC"
         )
 
-        # Show what the models will see
-        with st.expander("Portfolio context sent to models", expanded=False):
+        # Show what the models will see, with token estimate
+        est_tokens = len(context) // 4
+        with st.expander(
+            f"Portfolio context sent to models (~{est_tokens:,} tokens, "
+            f"{len(context):,} chars)", expanded=False
+        ):
             st.code(context, language="markdown")
 
         # Query all models
@@ -489,19 +555,31 @@ def render_council(client, allocator, tracker) -> None:
 
         # Parse proposals from each
         proposals = []
+        rejected = []
         for r in results:
             if r["error"]:
                 continue
             alloc = _parse_yaml_block(r["content"])
-            if alloc:
-                valid, msg = _validate_allocation(alloc)
-                if valid:
-                    proposals.append({"model": r["model"], "label": r["label"], "alloc": alloc})
+            if not alloc:
+                rejected.append((r["label"], "Could not parse YAML allocation block"))
+                continue
+            alloc = _normalize_allocation(alloc)
+            valid, msg = _validate_allocation(alloc)
+            if valid:
+                proposals.append({"model": r["model"], "label": r["label"], "alloc": alloc})
+            else:
+                rejected.append((r["label"], msg))
         st.session_state["council_proposals"] = proposals
+        st.session_state["council_rejected"] = rejected
 
     # Display results if available
     if "council_results" in st.session_state:
         _render_results(st.session_state["council_results"])
+
+    # Show rejected proposals so the user knows why Apply is missing
+    if st.session_state.get("council_rejected"):
+        for label, reason in st.session_state["council_rejected"]:
+            st.warning(f"**{label}** proposal rejected: {reason}")
 
     # Approval workflow
     if "council_proposals" in st.session_state and st.session_state["council_proposals"]:

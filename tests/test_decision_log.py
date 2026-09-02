@@ -68,14 +68,14 @@ class TestCouncilJournal:
 
 
 class TestVampireThoughts:
-    def test_tick_records_below_threshold(self, tmp_path):
+    async def test_tick_records_below_threshold(self, tmp_path):
         path = tmp_path / "decisions.jsonl"
         reset_throttle()
         client = type("C", (), {"is_dry_run": True})()
         engine = VampireEngine(client, None, None, VampireConfig(symbol="SPY", tick_threshold=0.10))
         engine._is_market_hours = lambda: True
         with patch.dict("os.environ", {"DECISION_LOG": str(path)}, clear=False):
-            engine.tick(100.01, vwap=100.0)
+            await engine.tick(100.01, vwap=100.0)
         assert engine.last_thought["decision"] == "below_threshold"
         row = json.loads(path.read_text().strip().splitlines()[-1])
         assert row["symbol"] == "SPY"

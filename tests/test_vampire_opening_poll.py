@@ -14,6 +14,7 @@ reverts for the rest of the session.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -86,14 +87,15 @@ class TestThePollLoopActuallyUsesTheWiderBudget:
         o.status, o.filled_qty, o.id = status, filled, oid
         return o
 
-    def _poll_count_before_giveup(self, monkeypatch, at_hh_mm_ss):
+    async def _poll_count_before_giveup(self, monkeypatch, at_hh_mm_ss):
         monkeypatch.setattr(ve, "datetime", _FakeNow(*at_hh_mm_ss))
         e = _engine()
         e._client.market_order.return_value = self._order("new", "0")
-        e._client.get_order.return_value = self._order("new", "0")  # never resolves
+        e._client.get_order.return_value = self._order("new", "0")
 
         clock = {"t": 1_000_000.0}
-        monkeypatch.setattr(ve.time, "sleep", lambda s: None)
+        async def noop_sleep(s): pass
+        monkeypatch.setattr(ve.asyncio, "sleep", noop_sleep)
         monkeypatch.setattr(ve.time, "time", lambda: clock["t"])
 
         polls = {"n": 0}
@@ -107,15 +109,15 @@ class TestThePollLoopActuallyUsesTheWiderBudget:
         e._client.get_order.side_effect = counting_get_order
 
         from alpaca.trading.enums import OrderSide
-        e._submit(10, 100.0, OrderSide.BUY)
+        await e._submit(10, 100.0, OrderSide.BUY)
         return polls["n"]
 
-    def test_at_the_open_it_polls_for_the_full_4s_budget(self, monkeypatch):
-        n = self._poll_count_before_giveup(monkeypatch, (9, 31, 0))
+    async def test_at_the_open_it_polls_for_the_full_4s_budget(self, monkeypatch):
+        n = await self._poll_count_before_giveup(monkeypatch, (9, 31, 0))
         expected = round(VampireEngine.OPENING_POLL_TIMEOUT / VampireEngine.POLL_INTERVAL)
         assert n == expected, f"expected ~{expected} polls (4.0s budget), got {n}"
 
-    def test_outside_the_window_it_only_polls_for_2s(self, monkeypatch):
-        n = self._poll_count_before_giveup(monkeypatch, (10, 2, 46))
+    async def test_outside_the_window_it_only_polls_for_2s(self, monkeypatch):
+        n = await self._poll_count_before_giveup(monkeypatch, (10, 2, 46))
         expected = round(VampireEngine.POLL_TIMEOUT / VampireEngine.POLL_INTERVAL)
         assert n == expected, f"expected ~{expected} polls (2.0s budget), got {n}"

@@ -53,39 +53,39 @@ def _engine(max_notional=None, max_position=100, position_size=10):
 
 
 class TestNotionalCap:
-    def test_no_cap_configured_leaves_behaviour_unchanged(self):
+    async def test_no_cap_configured_leaves_behaviour_unchanged(self):
         e = _engine(max_notional=None)
         for _ in range(12):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position == e.cfg.max_position
 
-    def test_long_accumulation_stops_at_the_cap(self):
+    async def test_long_accumulation_stops_at_the_cap(self):
         """$6,667 sleeve share at $700 a share is 9 shares, so one 10-lot fits
         and the second must be refused."""
         e = _engine(max_notional=6_667.0, position_size=5)
         for _ in range(20):
-            e.tick(700.0, vwap=701.0)
+            await e.tick(700.0, vwap=701.0)
         assert abs(e.net_position) * 700.0 <= 6_667.0
 
-    def test_short_accumulation_stops_at_the_cap(self):
+    async def test_short_accumulation_stops_at_the_cap(self):
         e = _engine(max_notional=6_667.0, position_size=5)
         for _ in range(20):
-            e.tick(701.0, vwap=700.0)
+            await e.tick(701.0, vwap=700.0)
         assert abs(e.net_position) * 701.0 <= 6_667.0
 
-    def test_exits_are_never_blocked_by_the_cap(self):
+    async def test_exits_are_never_blocked_by_the_cap(self):
         """A cap that blocks reducing risk is worse than no cap."""
         e = _engine(max_notional=6_667.0, position_size=5)
-        e.tick(700.0, vwap=701.0)
+        await e.tick(700.0, vwap=701.0)
         opened = e.net_position
         assert opened > 0
-        e.tick(701.0, vwap=700.0)          # exit direction
+        await e.tick(701.0, vwap=700.0)          # exit direction
         assert e.net_position < opened
 
-    def test_a_zero_cap_opens_nothing(self):
+    async def test_a_zero_cap_opens_nothing(self):
         e = _engine(max_notional=0.0)
         for _ in range(5):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         # 0.0 is falsy, so the cap is treated as unset rather than as "no trading"
         assert e.cfg.max_notional == 0.0
 
@@ -219,4 +219,3 @@ class TestSpreadAwareThresholds:
         a._data.get_latest_quote.return_value = None
         self._apply(a)
         assert a._engines["SPY"].cfg.tick_threshold == 0.02
-

@@ -46,57 +46,57 @@ def _engine(submit_order, poll_sequence=None):
 
 
 class TestFillIsResolvedNotGuessed:
-    def test_a_pending_order_is_polled_until_it_fills(self):
+    async def test_a_pending_order_is_polled_until_it_fills(self):
         """The exact defect: filled_qty is 0 at submit and 10 a moment later."""
         e, client = _engine(_order("new", "0"),
                             [_order("new", "0"), _order("filled", "10")])
-        assert e._submit(10, 100.0, OrderSide.BUY) == 10
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 10
 
-    def test_an_order_already_filled_at_submit_needs_no_poll(self):
+    async def test_an_order_already_filled_at_submit_needs_no_poll(self):
         e, client = _engine(_order("filled", "10"))
-        assert e._submit(10, 100.0, OrderSide.BUY) == 10
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 10
         client.get_order.assert_not_called()
 
-    def test_a_cancelled_ioc_reports_what_it_actually_filled(self):
+    async def test_a_cancelled_ioc_reports_what_it_actually_filled(self):
         e, _ = _engine(_order("new", "0"), [_order("canceled", "4")])
-        assert e._submit(10, 100.0, OrderSide.BUY) == 4
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 4
 
-    def test_a_fully_unfilled_cancel_reports_zero(self):
+    async def test_a_fully_unfilled_cancel_reports_zero(self):
         e, _ = _engine(_order("new", "0"), [_order("canceled", "0")])
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 0
 
-    def test_a_rejected_order_reports_zero(self):
+    async def test_a_rejected_order_reports_zero(self):
         e, _ = _engine(_order("new", "0"), [_order("rejected", "0")])
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 0
 
 
 class TestUnknownMeansFilled:
     """The direction that matters. Assuming unfilled is what let it run away."""
 
-    def test_a_poll_that_never_resolves_assumes_the_full_quantity(self):
+    async def test_a_poll_that_never_resolves_assumes_the_full_quantity(self):
         e, _ = _engine(_order("new", "0"), [_order("new", "0")] * 200)
         e.POLL_TIMEOUT = 0.15
-        assert e._submit(10, 100.0, OrderSide.BUY) == 10
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 10
 
-    def test_an_unreadable_poll_assumes_the_full_quantity(self):
+    async def test_an_unreadable_poll_assumes_the_full_quantity(self):
         e, client = _engine(_order("new", "0"))
         client.get_order.side_effect = RuntimeError("broker down")
-        assert e._submit(10, 100.0, OrderSide.BUY) == 10
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 10
 
-    def test_an_order_with_no_id_assumes_the_full_quantity(self):
+    async def test_an_order_with_no_id_assumes_the_full_quantity(self):
         o = _order("new", "0"); o.id = None
         e, _ = _engine(o)
-        assert e._submit(10, 100.0, OrderSide.BUY) == 10
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 10
 
-    def test_a_rejected_submission_is_the_one_case_that_is_zero(self):
+    async def test_a_rejected_submission_is_the_one_case_that_is_zero(self):
         """Nothing reached the venue, so nothing can fill."""
         e, client = _engine(_order())
         client.market_order.side_effect = RuntimeError("rejected at submit")
-        assert e._submit(10, 100.0, OrderSide.BUY) == 0
+        assert await e._submit(10, 100.0, OrderSide.BUY) == 0
 
 
 class TestTheBreachCannotRecur:
-    def test_repeated_pending_responses_still_cap_the_position(self):
+    async def test_repeated_pending_responses_still_cap_the_position(self):
         """Replays the failure: every submit returns filled_qty 0 and every
         order fills. The cap must hold anyway."""
         e, client = _engine(_order("new", "0"))
@@ -110,5 +110,5 @@ class TestTheBreachCannotRecur:
         client.get_order.side_effect = lambda _: _order("filled", str(asked["qty"]))
         e.POLL_INTERVAL = 0.001
         for _ in range(60):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position <= e.cfg.max_position, "the cap is a ceiling, not a trigger"

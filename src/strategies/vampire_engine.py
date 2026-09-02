@@ -7,6 +7,7 @@ Trades both directions: buys dips, shorts rips.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -100,7 +101,7 @@ class VampireEngine:
         self._reject_streak: int = 0
         self._reject_cooldown_until: float = 0.0
         self.last_thought: dict = {}
-        self._order_in_flight: bool = False  # guards against duplicate submissions
+        self._order_in_flight: bool = False
 
     @property
     def state(self) -> VampireState:
@@ -372,7 +373,7 @@ class VampireEngine:
             "vampire", "watching", **kwargs,
         )
 
-    def tick(self, current_price: float, vwap: float | None = None):
+    async def tick(self, current_price: float, vwap: float | None = None):
         """Process one price tick. Core bi-directional logic from the spec."""
         if self._state == VampireState.STOPPED:
             self._watch("engine stopped", "idle")
@@ -416,7 +417,7 @@ class VampireEngine:
         if delta >= self.cfg.tick_threshold:
             if self._net_position > 0:
                 want = min(self._net_position, self.cfg.position_size)
-                qty = self._submit(want, current_price, OrderSide.SELL)
+                qty = await self._submit(want, current_price, OrderSide.SELL)
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "sell", qty,
@@ -432,7 +433,7 @@ class VampireEngine:
                 want = min(self.cfg.position_size, room)
                 if want < 1 or self._would_breach_notional(want, current_price):
                     want = 0
-                qty = self._submit(want, current_price, OrderSide.SELL) if want else 0
+                qty = await self._submit(want, current_price, OrderSide.SELL) if want else 0
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "sell_short", qty,
@@ -445,7 +446,7 @@ class VampireEngine:
         elif delta <= -self.cfg.tick_threshold:
             if self._net_position < 0:
                 want = min(abs(self._net_position), self.cfg.position_size)
-                qty = self._submit(want, current_price, OrderSide.BUY)
+                qty = await self._submit(want, current_price, OrderSide.BUY)
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "buy_to_cover", qty,
@@ -461,7 +462,7 @@ class VampireEngine:
                 want = min(self.cfg.position_size, room)
                 if want < 1 or self._would_breach_notional(want, current_price):
                     want = 0
-                qty = self._submit(want, current_price, OrderSide.BUY) if want else 0
+                qty = await self._submit(want, current_price, OrderSide.BUY) if want else 0
                 if qty:
                     self._last_fill_price = current_price
                     self._tracker.record_trade(self.cfg.symbol, "buy", qty,
@@ -500,7 +501,7 @@ class VampireEngine:
     OPENING_POLL_TIMEOUT = 4.0   # doubled; only applies through OPENING_WINDOW_END
     POLL_INTERVAL = 0.05
 
-    def _submit(self, qty: int, price: float, side: OrderSide) -> int:
+    async def _submit(self, qty: int, price: float, side: OrderSide) -> int:
         """Place an IOC order and return the quantity that actually filled.
 
         Order-in-flight guard: if a submission is already pending (previous
@@ -520,75 +521,82 @@ class VampireEngine:
         case that returns zero is a submission the venue never accepted, where
         nothing can fill because nothing arrived.
         """
+        if self._order_in_flight:
+            return 0
+        
         order = None
-        for attempt in (0, 1):
-            try:
-                order = self._client.market_order(
-                    self.cfg.symbol, qty, side, TimeInForce.IOC
-                )
-                break
-            except Exception as exc:
-                self._note_reject(exc, side)
-                facts = self._reject_facts(exc)
-
-                # The refusal carries the truth this engine got wrong. Adopt it
-                # rather than retrying the same oversized order: an over-stated
-                # position asks for more than exists and is refused every time,
-                # which is a permanent deadlock, not a transient failure.
-                existing = facts.get("existing_qty")
-                if existing is not None and abs(self._net_position) != existing:
-                    corrected = existing if self._net_position >= 0 else -existing
-                    log.warning(
-                        "%s: counter said %d, venue says %d; adopting venue",
-                        self.cfg.symbol, self._net_position, corrected,
+        try:
+            self._order_in_flight = True
+            for attempt in (0, 1):
+                try:
+                    order = self._client.market_order(
+                        self.cfg.symbol, qty, side, TimeInForce.IOC
                     )
-                    self._net_position = corrected
+                    break
+                except Exception as exc:
+                    self._note_reject(exc, side)
+                    facts = self._reject_facts(exc)
 
-                available = facts.get("available")
-                if attempt == 0 and available is not None and 1 <= available < qty:
-                    qty = available
-                    continue
-                return 0
+                    # The refusal carries the truth this engine got wrong. Adopt it
+                    # rather than retrying the same oversized order: an over-stated
+                    # position asks for more than exists and is refused every time,
+                    # which is a permanent deadlock, not a transient failure.
+                    existing = facts.get("existing_qty")
+                    if existing is not None and abs(self._net_position) != existing:
+                        corrected = existing if self._net_position >= 0 else -existing
+                        log.warning(
+                            "%s: counter said %d, venue says %d; adopting venue",
+                            self.cfg.symbol, self._net_position, corrected,
+                        )
+                        self._net_position = corrected
 
-        self._clear_rejects()
+                    available = facts.get("available")
+                    if attempt == 0 and available is not None and 1 <= available < qty:
+                        qty = available
+                        continue
+                    return 0
 
-        status = getattr(order, "status", None)
-        if status is None and isinstance(order, dict):
-            status = order.get("status")
-        if str(status or "").lower() == "dry_run":
-            try:
-                filled = order.get("filled_qty") if isinstance(order, dict) else getattr(order, "filled_qty", qty)
-                return int(float(filled or qty))
-            except (TypeError, ValueError):
+            self._clear_rejects()
+
+            status = getattr(order, "status", None)
+            if status is None and isinstance(order, dict):
+                status = order.get("status")
+            if str(status or "").lower() == "dry_run":
+                try:
+                    filled = order.get("filled_qty") if isinstance(order, dict) else getattr(order, "filled_qty", qty)
+                    return int(float(filled or qty))
+                except (TypeError, ValueError):
+                    return qty
+
+            if self._is_terminal(status):
+                return self._filled_or(order, qty)
+
+            oid = getattr(order, "id", None)
+            if oid is None:
+                log.warning("%s: order carries no id; assuming it filled", self.cfg.symbol)
                 return qty
 
-        if self._is_terminal(status):
-            return self._filled_or(order, qty)
+            # Captured once, not re-read on every loop iteration: a poll that starts
+            # inside the opening window and finishes after it must not have its
+            # deadline or its log message disagree about which budget applied.
+            poll_timeout = self._current_poll_timeout()
+            deadline = time.time() + poll_timeout
+            while time.time() < deadline:
+                await asyncio.sleep(self.POLL_INTERVAL)
+                try:
+                    polled = self._client.get_order(str(oid))
+                except Exception:
+                    log.warning("%s: cannot read order %s; assuming it filled",
+                                self.cfg.symbol, oid, exc_info=True)
+                    return qty
+                if self._is_terminal(getattr(polled, "status", None)):
+                    return self._filled_or(polled, qty)
 
-        oid = getattr(order, "id", None)
-        if oid is None:
-            log.warning("%s: order carries no id; assuming it filled", self.cfg.symbol)
+            log.warning("%s: order %s did not resolve in %.1fs; assuming it filled",
+                        self.cfg.symbol, oid, poll_timeout)
             return qty
-
-        # Captured once, not re-read on every loop iteration: a poll that starts
-        # inside the opening window and finishes after it must not have its
-        # deadline or its log message disagree about which budget applied.
-        poll_timeout = self._current_poll_timeout()
-        deadline = time.time() + poll_timeout
-        while time.time() < deadline:
-            time.sleep(self.POLL_INTERVAL)
-            try:
-                polled = self._client.get_order(str(oid))
-            except Exception:
-                log.warning("%s: cannot read order %s; assuming it filled",
-                            self.cfg.symbol, oid, exc_info=True)
-                return qty
-            if self._is_terminal(getattr(polled, "status", None)):
-                return self._filled_or(polled, qty)
-
-        log.warning("%s: order %s did not resolve in %.1fs; assuming it filled",
-                    self.cfg.symbol, oid, poll_timeout)
-        return qty
+        finally:
+            self._order_in_flight = False
 
     def _current_poll_timeout(self) -> float:
         """The fill-confirmation budget for a submission starting right now."""
@@ -612,40 +620,16 @@ class VampireEngine:
             return fallback
 
     def _buy(self, qty: int, price: float):
-        try:
-            self._client.market_order(self.cfg.symbol, qty, OrderSide.BUY, TimeInForce.IOC)
-            self._last_fill_price = price
-            self._tracker.record_trade(self.cfg.symbol, "buy", qty, price, "vampire")
-            log.debug("BUY %d %s @ %.2f", qty, self.cfg.symbol, price)
-        except Exception:
-            log.exception("Buy failed")
+        raise NotImplementedError("Dead code - removed per async refactor")
 
     def _sell(self, qty: int, price: float):
-        try:
-            self._client.market_order(self.cfg.symbol, qty, OrderSide.SELL, TimeInForce.IOC)
-            self._last_fill_price = price
-            self._tracker.record_trade(self.cfg.symbol, "sell", qty, price, "vampire")
-            log.debug("SELL %d %s @ %.2f", qty, self.cfg.symbol, price)
-        except Exception:
-            log.exception("Sell failed")
+        raise NotImplementedError("Dead code - removed per async refactor")
 
     def _sell_short(self, qty: int, price: float):
-        try:
-            self._client.market_order(self.cfg.symbol, qty, OrderSide.SELL, TimeInForce.IOC)
-            self._last_fill_price = price
-            self._tracker.record_trade(self.cfg.symbol, "sell_short", qty, price, "vampire")
-            log.debug("SHORT %d %s @ %.2f", qty, self.cfg.symbol, price)
-        except Exception:
-            log.exception("Short sell failed")
+        raise NotImplementedError("Dead code - removed per async refactor")
 
     def _buy_to_cover(self, qty: int, price: float):
-        try:
-            self._client.market_order(self.cfg.symbol, qty, OrderSide.BUY, TimeInForce.IOC)
-            self._last_fill_price = price
-            self._tracker.record_trade(self.cfg.symbol, "buy_to_cover", qty, price, "vampire")
-            log.debug("COVER %d %s @ %.2f", qty, self.cfg.symbol, price)
-        except Exception:
-            log.exception("Cover failed")
+        raise NotImplementedError("Dead code - removed per async refactor")
 
     def _flatten_all(self, reason: str):
         log.info("Flattening all vampire positions: %s (net=%d)", reason, self._net_position)

@@ -41,50 +41,50 @@ def _engine(paused_until=None):
 
 
 class TestThePauseStopsTrading:
-    def test_a_paused_engine_places_no_orders(self):
+    async def test_a_paused_engine_places_no_orders(self):
         e = _engine(paused_until=TOMORROW)
         for _ in range(20):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position == 0
         assert e._client.market_order.call_count == 0
 
-    def test_a_paused_engine_reports_idle_not_watching(self):
+    async def test_a_paused_engine_reports_idle_not_watching(self):
         e = _engine(paused_until=TOMORROW)
-        e.tick(99.0, vwap=100.0)
+        await e.tick(99.0, vwap=100.0)
         assert e.state is VampireState.IDLE
 
-    def test_a_position_held_when_the_pause_begins_is_flattened(self):
+    async def test_a_position_held_when_the_pause_begins_is_flattened(self):
         """Halting while long would leave an unmanaged position with nothing
         watching it: the engine that would normally exit is the one just
         switched off."""
         e = _engine(paused_until=None)
-        e.tick(99.0, vwap=100.0)
+        await e.tick(99.0, vwap=100.0)
         assert e.net_position > 0
 
         e.cfg.paused_until = TOMORROW
-        e.tick(99.0, vwap=100.0)
+        await e.tick(99.0, vwap=100.0)
         assert e.net_position == 0
         e._client.close_position.assert_called_once_with("TQQQ")
 
 
 class TestThePauseExpires:
-    def test_the_resume_date_itself_trades(self):
+    async def test_the_resume_date_itself_trades(self):
         """Set to tomorrow's date, it must trade tomorrow, not the day after."""
         e = _engine(paused_until=TODAY.isoformat())
         for _ in range(3):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position > 0
 
-    def test_a_past_date_trades(self):
+    async def test_a_past_date_trades(self):
         e = _engine(paused_until=YESTERDAY)
         for _ in range(3):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position > 0
 
-    def test_unset_trades(self):
+    async def test_unset_trades(self):
         e = _engine(paused_until=None)
         for _ in range(3):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position > 0
 
 
@@ -92,20 +92,20 @@ class TestItCanOnlyEverStopTrading:
     """The gate is one-directional by construction. A bug in it must not be
     able to start trading, only to prevent it."""
 
-    def test_an_unparseable_date_does_not_pause(self):
+    async def test_an_unparseable_date_does_not_pause(self):
         """A typo must not silently halt the strategy forever. That failure is
         invisible - the engine simply never trades and nothing says why."""
         for bad in ("tomorrow", "2026-13-45", "09/02/2026", ""):
             e = _engine(paused_until=bad)
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
             assert e.net_position > 0, f"{bad!r} should not pause"
 
-    def test_the_pause_does_not_override_the_session_window(self):
+    async def test_the_pause_does_not_override_the_session_window(self):
         """Outside market hours it stays stopped whether paused or not."""
         e = _engine(paused_until=YESTERDAY)
         e._is_market_hours = lambda: False
         for _ in range(5):
-            e.tick(99.0, vwap=100.0)
+            await e.tick(99.0, vwap=100.0)
         assert e.net_position == 0
 
 
@@ -143,7 +143,6 @@ class TestTheConfigIsWiredToTheEngine:
             try:
                 Coordinator()
             except Exception:
-                # Construction touches the broker; only the call matters here.
                 pass
         assert VA.called, "the coordinator never built a VampireAgent"
         overrides = VA.call_args.kwargs.get("config_overrides")

@@ -62,63 +62,63 @@ def _patch_market_hours(engine):
 
 
 class TestVampireTick:
-    def test_buy_on_dip(self, engine):
+    async def test_buy_on_dip(self, engine):
         _patch_market_hours(engine)
         engine._last_fill_price = 100.00
-        engine.tick(99.97, vwap=100.00)
+        await engine.tick(99.97, vwap=100.00)
         assert engine.net_position == 10
 
-    def test_sell_on_rip_when_long(self, engine):
+    async def test_sell_on_rip_when_long(self, engine):
         _patch_market_hours(engine)
         engine._net_position = 10
         engine._last_fill_price = 100.00
-        engine.tick(100.03, vwap=100.00)
+        await engine.tick(100.03, vwap=100.00)
         assert engine.net_position == 0
 
-    def test_short_on_rip_when_flat(self, engine):
+    async def test_short_on_rip_when_flat(self, engine):
         _patch_market_hours(engine)
         engine._last_fill_price = 100.00
-        engine.tick(100.03, vwap=100.00)
+        await engine.tick(100.03, vwap=100.00)
         assert engine.net_position == -10
 
-    def test_cover_on_dip_when_short(self, engine):
+    async def test_cover_on_dip_when_short(self, engine):
         _patch_market_hours(engine)
         engine._net_position = -10
         engine._last_fill_price = 100.00
-        engine.tick(99.97, vwap=100.00)
+        await engine.tick(99.97, vwap=100.00)
         assert engine.net_position == 0
 
-    def test_max_position_long(self, engine):
+    async def test_max_position_long(self, engine):
         _patch_market_hours(engine)
         engine._net_position = 100
         engine._last_fill_price = 100.00
-        engine.tick(99.97, vwap=100.00)
+        await engine.tick(99.97, vwap=100.00)
         assert engine.net_position == 100
 
-    def test_max_position_short(self, engine):
+    async def test_max_position_short(self, engine):
         _patch_market_hours(engine)
         engine._net_position = -100
         engine._last_fill_price = 100.00
-        engine.tick(100.03, vwap=100.00)
+        await engine.tick(100.03, vwap=100.00)
         assert engine.net_position == -100
 
-    def test_no_trade_within_threshold(self, engine):
+    async def test_no_trade_within_threshold(self, engine):
         _patch_market_hours(engine)
         engine._last_fill_price = 100.00
-        engine.tick(100.01, vwap=100.00)
+        await engine.tick(100.01, vwap=100.00)
         assert engine.net_position == 0
 
-    def test_circuit_breaker_stops_trading(self, engine):
+    async def test_circuit_breaker_stops_trading(self, engine):
         _patch_market_hours(engine)
         engine._daily_pnl = -51.0
         engine._last_fill_price = 100.00
-        engine.tick(99.97, vwap=100.00)
+        await engine.tick(99.97, vwap=100.00)
         assert engine.state == VampireState.STOPPED
 
-    def test_outside_market_hours_flattens(self, engine):
+    async def test_outside_market_hours_flattens(self, engine):
         engine._is_market_hours = lambda: False
         engine._net_position = 10
-        engine.tick(100.00, vwap=100.00)
+        await engine.tick(100.00, vwap=100.00)
         assert engine.state == VampireState.IDLE
 
 

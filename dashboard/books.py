@@ -34,7 +34,7 @@ def render_sleeve_books(client) -> None:
             "In play %": (b.invested / b.budget * 100) if b.budget else 0.0,
             "Turnover": b.notional_today,
             "Unrealized P&L": b.unrealized_pnl,
-            "Realized P&L": b.realized_pnl if b.realized_pnl is not None else "",
+            "Realized P&L": float(b.realized_pnl) if b.realized_pnl is not None else 0.0,
             "Positions": b.positions,
             "Fills today": b.fills_today,
         })
@@ -50,6 +50,7 @@ def render_sleeve_books(client) -> None:
             "In play %": st.column_config.NumberColumn(format="%.0f%%"),
             "Turnover": st.column_config.NumberColumn(format="$%.0f"),
             "Unrealized P&L": st.column_config.NumberColumn(format="$%.2f"),
+            "Realized P&L": st.column_config.NumberColumn(format="$%.2f"),
         },
     )
     holdings = [h for b in books for h in b.holdings]

@@ -16,7 +16,7 @@ _DASHBOARD_DIR = os.path.dirname(__file__)
 sys.path.insert(0, os.path.join(_DASHBOARD_DIR, ".."))
 sys.path.insert(0, _DASHBOARD_DIR)
 
-from src.core.alpaca_client import AlpacaClient, load_config
+from src.core.alpaca_client import AlpacaClient
 from src.core.account_identity import describe_broker_account
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
@@ -25,6 +25,7 @@ from src.core.financial_data import FinancialDataProvider
 from src.strategies.csp import CashSecuredPutStrategy
 from src.strategies.sixfold_engine import SixfoldEngine
 from src.risk.allocation import AllocationManager, AllocationConfig
+from src.core.alpaca_client import load_config as load_alpaca_config
 from src.core.config import load_config
 from src.core.decision_log import count_trades_today
 from cockpit import render_decision_feed, render_live_agents, render_operator_future
@@ -52,7 +53,7 @@ def get_client():
                 "Dashboard must run via ./scripts/run_staging.sh dashboard "
                 "(ALPACA_ENV=staging). Contest keys are not allowed here."
             )
-    return AlpacaClient(config=load_config(staging=True), dry_run=True)
+    return AlpacaClient(config=load_alpaca_config(staging=True), dry_run=True)
 
 
 @st.cache_resource

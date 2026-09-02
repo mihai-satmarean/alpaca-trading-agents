@@ -77,16 +77,16 @@ class TestReconcile:
 class TestCapHoldsAcrossARestart:
     """The regression that cost us $137,000 of unintended exposure."""
 
-    def test_a_restart_that_adopts_the_position_refuses_to_add(self):
+    async def test_a_restart_that_adopts_the_position_refuses_to_add(self):
         """Already past the cap, so the only correct number of new shorts is
         zero. The position cannot shrink by adding to it."""
         e = _engine(max_notional=6_667.0)
         e.reconcile(qty=-47, avg_entry=714.0)          # what the broker holds
         for _ in range(20):
-            e.tick(714.0, vwap=713.0)                  # would open more shorts
+            await e.tick(714.0, vwap=713.0)                  # would open more shorts
         assert e.net_position == -47
 
-    def test_without_reconciling_a_fresh_engine_opens_a_whole_new_cap(self):
+    async def test_without_reconciling_a_fresh_engine_opens_a_whole_new_cap(self):
         """The defect, exactly: a fresh process believes it is flat and is
         therefore entitled to the full cap again. Ten restarts bought ten caps,
         which is how SPY reached -80 against an 8-share limit."""
@@ -94,23 +94,23 @@ class TestCapHoldsAcrossARestart:
         e.cfg.position_size = 8                        # what sizing sets at $767
         assert e.net_position == 0                     # the false premise
         for _ in range(20):
-            e.tick(767.0, vwap=766.0)
+            await e.tick(767.0, vwap=766.0)
         assert e.net_position == -8                    # one full cap, from nothing
         assert abs(e.net_position) * 767.0 <= 6_667.0  # and it stops there
 
-    def test_an_already_oversized_position_opens_nothing(self):
+    async def test_an_already_oversized_position_opens_nothing(self):
         e = _engine(max_notional=6_667.0)
         e.reconcile(qty=-80, avg_entry=766.0)          # far past the cap
         before = e.net_position
         for _ in range(10):
-            e.tick(766.0, vwap=765.0)
+            await e.tick(766.0, vwap=765.0)
         assert e.net_position == before                # no new shorts
 
-    def test_an_oversized_position_can_still_be_reduced(self):
+    async def test_an_oversized_position_can_still_be_reduced(self):
         """A cap that blocks risk reduction is worse than no cap."""
         e = _engine(max_notional=6_667.0)
         e.reconcile(qty=-80, avg_entry=766.0)
-        e.tick(765.0, vwap=766.0)                      # cover direction
+        await e.tick(765.0, vwap=766.0)                      # cover direction
         assert e.net_position > -80
 
 

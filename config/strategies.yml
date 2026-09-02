@@ -57,12 +57,16 @@
 # ~$3.8K over its 60% sleeve after the KO round-lot top-up, so 70% buys about
 # $6K of new positions, one or two mid-cap names, not the whole idle balance.
 # The remaining lever is reserve 10 -> 5, deliberately left alone.
+# 2026-09-02 16:45 ET, Frank: "lower the reserve to 5% and deploy the rest".
+# The five points go to SIXFOLD, the only sleeve with candidates to buy (100
+# names scored 60+ on the first S&P 400 scan). The risk layer's $5,000
+# min_cash_reserve below is unchanged and still binds independently.
 allocation:
-  sixfold_pct: 0.70      # Tashi SIXFOLD, was 0.60
+  sixfold_pct: 0.75      # Tashi SIXFOLD, was 0.70
   options_pct: 0.15      # CSP
   vampire_pct: 0.00      # scalper RETIRED on measured expectancy (see above)
-  pendulum_pct: 0.05     # Tashi Pendulum, was 0.15
-  reserve_pct: 0.10      # buffer
+  pendulum_pct: 0.05     # Tashi Pendulum
+  reserve_pct: 0.05      # buffer, was 0.10
 
 # Pendulum -- mean reversion on long-duration Treasuries, Tashi's spec v1.1.
 #

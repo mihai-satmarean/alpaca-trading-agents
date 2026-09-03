@@ -222,6 +222,15 @@ def render_hero(client: AlpacaClient, tracker: PositionTracker):
     ), unsafe_allow_html=True)
 
 
+def _vampire_paused(cfg) -> bool:
+    """The pause is a date the engine compares against today, not a flag: an
+    expired paused_until must read as active, not armed."""
+    from src.strategies.vampire_engine import VampireConfig, VampireEngine
+    probe = VampireEngine.__new__(VampireEngine)
+    probe.cfg = VampireConfig(symbol="_", paused_until=cfg.vampire_paused_until)
+    return probe._is_paused()
+
+
 def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
     budget = allocator.get_budget()
     cfg = load_config()
@@ -235,7 +244,7 @@ def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
         dict(name="Pendulum", target_pct=cfg.pendulum_pct, budget=budget.pendulum_budget, used=budget.pendulum_used,
              status="active" if budget.pendulum_used > 0 else "armed"),
         dict(name="Vampire", target_pct=cfg.vampire_pct, budget=budget.vampire_budget, used=budget.vampire_used,
-             status="retired" if cfg.vampire_pct == 0 else ("active" if not cfg.vampire_paused_until else "armed")),
+             status="retired" if cfg.vampire_pct == 0 else ("armed" if _vampire_paused(cfg) else "active")),
     ]
 
 

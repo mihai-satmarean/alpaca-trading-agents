@@ -166,9 +166,9 @@ class TestConfigDrivesBehaviour:
         # to SIXFOLD, the only sleeve with real notional and a positive mark.
         # 2026-09-02 16:10 ET: ten points from Pendulum to SIXFOLD for the S&P 400.
         assert (cfg.sixfold_pct, cfg.options_pct) == (0.75, 0.15)
-        assert cfg.vampire_pct == 0.0, "scalper retired; a zero budget means it does not start"
+        assert cfg.vampire_pct == 0.05, "re-funded from reserve 2026-09-02 evening behind the LLM regime gate"
         assert cfg.pendulum_pct == 0.05, "Pendulum keeps one tranche's worth"
-        assert cfg.reserve_pct == 0.05, "reserve halved 2026-09-02 16:45 ET to deploy the rest"
+        assert cfg.reserve_pct == 0.0, "the reserve went to the Vampire 2026-09-02 evening; min_cash_reserve still binds"
         assert (cfg.sixfold_pct + cfg.options_pct + cfg.vampire_pct
                 + cfg.pendulum_pct + cfg.reserve_pct) == pytest.approx(1.0), (
             "every sleeve plus reserve must account for the whole account; a "
@@ -183,7 +183,8 @@ class TestConfigDrivesBehaviour:
         budget = AllocationManager(tracker, AllocationConfig.from_config()).get_budget()
         assert budget.sixfold_budget == pytest.approx(75_000.0)
         assert budget.pendulum_budget == pytest.approx(5_000.0)
-        assert budget.vampire_budget == 0.0
+        assert budget.vampire_budget == pytest.approx(5_000.0), "5% from reserve, 2026-09-02 evening"
+        assert budget.reserve_target == 0.0
 
     def test_every_csp_symbol_is_affordable_at_the_options_sleeve(self):
         """A contract whose collateral exceeds the sleeve can never be sold.

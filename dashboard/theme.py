@@ -48,9 +48,17 @@ CSS = f"""
   --pa-shadow-soft:0 8px 28px rgba(0,0,0,0.07); --pa-shadow-hover:0 20px 60px rgba(0,0,0,0.12);
   --pa-ease:cubic-bezier(.4,.0,.2,1);
 }}
-html, body, .stApp, [class*="css"], [data-testid="stAppViewContainer"] * {{
+html, body, .stApp, [class*="css"], [data-testid="stAppViewContainer"] *:not([data-testid^="stIcon"]) {{
   font-family: var(--pa-font) !important;
 }}
+/* Streamlit's expander/status/toast chevrons are a ligature glyph font
+   (Material Symbols): the string "keyboard_arrow_right" only renders as an
+   arrow under that specific font. The universal override above forced our
+   own font onto those spans too, so the browser had nothing to map the
+   ligature onto and printed the icon's NAME as literal text, overlapping
+   the label next to it. Carving stIcon* out of the override above and
+   leaving it unset here lets Streamlit's own stylesheet supply that font
+   again, which is all any of these icons ever needed. */
 .stApp {{ background: var(--pa-white); color: var(--pa-ink); }}
 /* Streamlit chrome: judges see a product, not a framework */
 #MainMenu, footer, header[data-testid="stHeader"] {{ visibility: hidden; height: 0; }}

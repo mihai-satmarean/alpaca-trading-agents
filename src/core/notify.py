@@ -49,14 +49,8 @@ def _journal(entry: dict) -> None:
     them until someone noticed the panel had gone quiet.
     """
     try:
-        os.makedirs(os.path.dirname(JOURNAL_PATH), exist_ok=True)
-        with open(JOURNAL_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-        if os.path.getsize(JOURNAL_PATH) > JOURNAL_MAX_BYTES:
-            with open(JOURNAL_PATH, "r", encoding="utf-8") as fh:
-                keep = fh.readlines()[-2000:]
-            with open(JOURNAL_PATH, "w", encoding="utf-8") as fh:
-                fh.writelines(keep)
+        from src.core.journal import append_chained
+        append_chained(JOURNAL_PATH, entry, JOURNAL_MAX_BYTES)
     except Exception:
         log.debug("notification journal write failed", exc_info=True)
 

@@ -187,14 +187,8 @@ def parse_verdict(text: str | None, symbol: str, model: str = "",
 def _journal(entry: dict) -> None:
     """Append one record. Never raises: an audit trail must not stop trading."""
     try:
-        os.makedirs(os.path.dirname(JOURNAL_PATH), exist_ok=True)
-        with open(JOURNAL_PATH, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-        if os.path.getsize(JOURNAL_PATH) > JOURNAL_MAX_BYTES:
-            with open(JOURNAL_PATH, "r", encoding="utf-8") as fh:
-                keep = fh.readlines()[-2000:]
-            with open(JOURNAL_PATH, "w", encoding="utf-8") as fh:
-                fh.writelines(keep)
+        from src.core.journal import append_chained
+        append_chained(JOURNAL_PATH, entry, JOURNAL_MAX_BYTES)
     except Exception:
         log.debug("regime journal write failed", exc_info=True)
 

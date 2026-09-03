@@ -533,6 +533,8 @@ def _render_regime_verdicts(cfg) -> None:
             "Reason": rec.get("reason") or rec.get("error") or "",
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    from src.strategies.regime_advisor import JOURNAL_PATH as REGIME_JOURNAL
+    _render_journal_integrity(REGIME_JOURNAL, "Regime journal")
 
 
 def render_recent_notifications(limit: int = 6) -> None:
@@ -562,6 +564,21 @@ def render_recent_notifications(limit: int = 6) -> None:
         })
     st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
     st.caption("Full feed, including what ntfy still holds, in the Notifications tab.")
+
+
+def _render_journal_integrity(path: str, name: str) -> None:
+    """Every entry is SHA-256 linked to the one before it; this checks the
+    whole file on every load and says so in one line, or shouts if a link
+    is broken. A journal is only an audit trail if someone can verify it."""
+    from src.core.journal import describe, verify_chain
+    rep = verify_chain(path)
+    if rep["intact"] is None:
+        return
+    text = describe(rep, name)
+    if rep["intact"]:
+        st.caption("Integrity: " + text)
+    else:
+        st.error("Integrity: " + text)
 
 
 def _ntfy_live(topic: str, since: str = "12h",
@@ -628,7 +645,7 @@ def render_notifications():
     alert path leaves no trace and hides an outage for days. The ntfy poll is
     the independent confirmation that a message actually landed.
     """
-    from src.core.notify import DEFAULT_TOPIC, read_journal
+    from src.core.notify import DEFAULT_TOPIC, JOURNAL_PATH, read_journal
 
     cfg_topic = os.environ.get("NTFY_TOPIC", DEFAULT_TOPIC)
     sns_on = bool(os.environ.get("SNS_TOPIC_ARN"))
@@ -649,6 +666,7 @@ def render_notifications():
     c2.metric("On ntfy now", "?" if live_err else len(live),
               help="ntfy.sh retains about 12 hours")
     c3.metric("Failed sends", len(failed), delta=None if not failed else "check the log")
+    _render_journal_integrity(JOURNAL_PATH, "Send journal")
     if failed:
         st.error(f"{len(failed)} notification(s) failed to deliver. "
                  "An alert that never arrives is indistinguishable from a quiet system.")

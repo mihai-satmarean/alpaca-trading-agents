@@ -13,6 +13,7 @@ be tested without Streamlit. Streamlit only ever receives strings.
 
 from __future__ import annotations
 
+import re
 from html import escape
 
 INK = "#1d1d1f"
@@ -129,6 +130,47 @@ p, li, .stMarkdown {{ color: var(--pa-ink); font-size: 16px; line-height: 1.6; }
 .pa-ledger .pos {{ color: var(--pa-up); }} .pa-ledger .neg {{ color: var(--pa-down); }}
 .pa-ledger .grp td {{ padding-top: 22px; border-bottom: none; }}
 .pa-ledger tfoot td {{ font-weight: 700; border-top: 1px solid var(--pa-ink); border-bottom: none; }}
+
+/* Notification rows: a hand-authored <details>/<summary> list rather than
+   st.expander, so severity color and a hover tooltip are ours to set and
+   nothing here depends on Streamlit's own icon font. */
+.pa-notif-list {{ border-top: 1px solid var(--pa-gray-100); }}
+.pa-notif-row {{ border-bottom: 1px solid var(--pa-gray-100); }}
+.pa-notif-row summary {{ display: flex; align-items: center; gap: 12px; padding: 11px 4px; cursor: pointer;
+  list-style: none; font-size: 14px; }}
+.pa-notif-row summary::-webkit-details-marker {{ display: none; }}
+.pa-notif-row summary::before {{ content: "\203A"; display: inline-block; width: 12px; font-size: 16px;
+  color: var(--pa-gray-500); transition: transform 0.15s var(--pa-ease); flex-shrink: 0; }}
+.pa-notif-row[open] summary::before {{ transform: rotate(90deg); }}
+.pa-notif-row:hover summary {{ background: var(--pa-gray-50); }}
+.pa-notif-row .pa-notif-when {{ color: var(--pa-gray-500); font-variant-numeric: tabular-nums; flex-shrink: 0; width: 92px; }}
+.pa-notif-row .pa-notif-title {{ flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }}
+.pa-notif-row .pa-notif-via {{ color: var(--pa-gray-500); font-size: 12px; flex-shrink: 0; }}
+.pa-notif-row .pa-notif-body {{ padding: 2px 4px 16px 28px; color: var(--pa-gray-600); font-size: 14px; line-height: 1.5;
+  white-space: pre-wrap; }}
+.pa-notif-row .pa-notif-body .pa-notif-meta {{ margin-top: 8px; font-size: 12px; color: var(--pa-gray-500); }}
+.pa-chip--sev-high {{ color: var(--pa-down); border-color: #f1c9c6; background: #fdf1f0; }}
+.pa-chip--sev-default {{ color: var(--pa-purple); border-color: #d9d0f2; background: #f3effc; }}
+.pa-chip--sev-low {{ color: var(--pa-gray-600); }}
+
+/* Session-report content inside an expanded notification row: typeset
+   stats and sleeve blocks, not a markdown source dump. */
+.pa-notif-lead {{ font-style: italic; color: var(--pa-gray-600); margin: 0 0 12px; }}
+.pa-notif-stats {{ display: flex; gap: 28px; margin-bottom: 16px; }}
+.pa-notif-stat__l {{ font-size: 11px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--pa-gray-500); }}
+.pa-notif-stat__v {{ font-size: 18px; font-weight: 700; letter-spacing: -0.01em; font-variant-numeric: tabular-nums; }}
+.pa-notif-stat__v.pos {{ color: var(--pa-up); }} .pa-notif-stat__v.neg {{ color: var(--pa-down); }}
+.pa-notif-sleeve {{ padding: 10px 0; border-top: 1px solid var(--pa-gray-100); }}
+.pa-notif-sleeve__hd {{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }}
+.pa-notif-sleeve__name {{ font-weight: 600; }}
+.pa-notif-sleeve__sub {{ font-size: 13px; color: var(--pa-gray-600); margin-top: 2px; }}
+.pa-notif-sleeve__sub .pos {{ color: var(--pa-up); }} .pa-notif-sleeve__sub .neg {{ color: var(--pa-down); }}
+.pa-notif-syms {{ margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }}
+.pa-notif-sym {{ font-size: 11px; font-weight: 600; letter-spacing: 0.01em; padding: 3px 8px; border-radius: 6px;
+  background: var(--pa-gray-50); color: var(--pa-gray-600); font-variant-numeric: tabular-nums; }}
+.pa-notif-orders {{ margin: 6px 0 0; padding-left: 18px; font-size: 13px; color: var(--pa-gray-600); }}
+.pa-notif-orders li {{ margin-bottom: 3px; }}
+.pa-notif-trailer {{ margin-top: 12px; font-size: 14px; color: var(--pa-gray-600); }}
 
 /* Streamlit widgets, restyled to the system */
 /* Streamlit >= 1.36 renders its own tabs: div[role="tab"] inside div[role="tablist"],
@@ -262,6 +304,194 @@ def sleeve_card_html(name: str, target_pct: float, budget: float, used: float, s
 def sleeve_cards_html(cards: list[dict]) -> str:
     inner = "".join(sleeve_card_html(**c) for c in cards)
     return f'<section class="pa-band"><div class="pa-band__wrap"><div class="pa-eyebrow">Where the money is</div><div class="pa-cards">{inner}</div></div></section>'
+
+
+def _one_line(text: str, limit: int) -> str:
+    """Collapse all whitespace (including blank lines) to single spaces.
+
+    For a title="" tooltip specifically: a real notify() message is multi-
+    paragraph, blank-line-separated markdown. Embedding that verbatim into an
+    HTML attribute is fine as far as the browser's HTML parser is concerned,
+    but Streamlit's markdown pre-processing runs first and treats a raw HTML
+    block as ENDED by the first blank line it finds -- even one sitting
+    inside an attribute we are still in the middle of writing. Every row hit
+    this: the tooltip broke exactly at "\n\n", and everything after it,
+    including our own <span> markup for that row, rendered as literal text.
+    A one-line tooltip has no blank line to trigger on, so this is not a
+    truncation nicety, it is the actual fix.
+    """
+    collapsed = " ".join(text.split())
+    # The preview is plain text in a native tooltip: markdown's ** and _
+    # markers would show up literally, which is the "cryptic" look Frank
+    # called out. Strip the markers; the expanded body typesets them properly.
+    collapsed = collapsed.replace("**", "")
+    collapsed = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", collapsed)
+    return collapsed[:limit]
+
+
+def _multiline_html(text: str) -> str:
+    """Escape, then turn real newlines into <br> rather than leaving them.
+
+    Same root cause as _one_line, applied to the expanded body instead of
+    the tooltip: a message with a blank line ends the raw-HTML block Streamlit
+    was rendering us as. Converting every newline to a literal <br> removes
+    the blank lines from the SOURCE text entirely -- the parser never sees
+    one -- while <br> still renders as the line break CSS's pre-wrap would
+    otherwise have given us from a bare "\n".
+    """
+    return escape(text).replace("\n", "<br>")
+
+
+_SESSION_STAT_RE = re.compile(r"\*\*(Equity|Cash|Day P&L)\*\*\s*([+-]?\$[\d,]+\.?\d*)")
+# "Unattributed" has no sleeve budget: "**Unattributed** $7,025" rather than
+# "**Name** $X / $Y (Z%)". The budget/pct group is optional for that reason --
+# without it, the first version silently folded Unattributed's own positions
+# into whichever sleeve happened to precede it, since nothing marked where
+# that sleeve's block was supposed to end.
+_SLEEVE_HEADER_RE = re.compile(
+    r"\*\*([^*]+?)\*\*\s*\$([\d,]+)(?:\s*/\s*\$([\d,]+)\s*\((\d+)%\))?\n"
+    r"\s*unrealized\s+([+-]\$[\d,]+\.?\d*)\s*\xb7\s*(\d+)\s*position\(s\)"
+)
+_WORKING_ORDERS_RE = re.compile(r"\*\*Working orders\*\*\s*\((\d+)\)")
+
+
+def parse_session_report(message: str) -> dict | None:
+    """Interpret notify()'s own session-report shape: an italic lead line,
+    Equity/Cash/Day P&L, one block per sleeve (used/budget/pct, unrealized,
+    position symbols), an optional Working orders count, and a trailing
+    free-text sentence. Returns None for anything that doesn't match --
+    a watchdog alert, the short session-starting ping -- so the caller can
+    fall back to plain rendering rather than force this shape onto it.
+
+    Built and tested against the exact messages notify() has actually sent
+    (scripts/run_live.py, src/core/schedule.py), not a guessed format.
+    """
+    stats = dict(_SESSION_STAT_RE.findall(message))
+    if "Equity" not in stats:
+        return None
+
+    lead = None
+    first_line = message.split("\n", 1)[0].strip()
+    if first_line.startswith("_") and first_line.endswith("_") and len(first_line) > 2:
+        lead = first_line[1:-1]
+
+    sleeves = []
+    headers = list(_SLEEVE_HEADER_RE.finditer(message))
+    for i, m in enumerate(headers):
+        name, used, budget, pct, unrl, count = m.groups()
+        block_end = headers[i + 1].start() if i + 1 < len(headers) else len(message)
+        block = message[m.end():block_end]
+        symbols = re.findall(r"^\s{4}(\S+)\s*$", block, re.MULTILINE)
+        sleeves.append({
+            "name": name.strip(), "used": used, "budget": budget,
+            "pct": int(pct) if pct is not None else None,
+            "unrealized": unrl, "position_count": int(count), "symbols": symbols,
+        })
+
+    working_orders = None
+    wo = _WORKING_ORDERS_RE.search(message)
+    if wo:
+        after = message[wo.end():]
+        lines = [ln.strip() for ln in after.split("\n")
+                 if re.match(r"^[A-Z]{1,6}\s+(buy|sell)\b", ln.strip())]
+        working_orders = lines[:int(wo.group(1))] if lines else None
+
+    trailer = None
+    tail_match = re.search(r"\n---\n(.+)$", message, re.DOTALL)
+    if tail_match:
+        trailer = tail_match.group(1).strip()
+
+    return {"lead": lead, "stats": stats, "sleeves": sleeves,
+            "working_orders": working_orders, "trailer": trailer}
+
+
+def session_report_html(parsed: dict) -> str:
+    """Render a parsed session report as PA-styled stat rows and sleeve
+    cards instead of the raw markdown notify() sends to a phone."""
+    out = []
+    if parsed.get("lead"):
+        out.append(f'<p class="pa-notif-lead">{escape(parsed["lead"])}</p>')
+
+    stats = parsed.get("stats") or {}
+    if stats:
+        cells = []
+        for label in ("Equity", "Cash", "Day P&L"):
+            if label not in stats:
+                continue
+            v = stats[label]
+            cls = ("pos" if v.startswith("+") else "neg" if v.startswith("-") else "") if label == "Day P&L" else ""
+            cells.append(f'<div class="pa-notif-stat"><div class="pa-notif-stat__l">{escape(label)}</div>'
+                        f'<div class="pa-notif-stat__v {cls}">{escape(v)}</div></div>')
+        out.append(f'<div class="pa-notif-stats">{"".join(cells)}</div>')
+
+    for sv in parsed.get("sleeves") or []:
+        has_budget = sv["pct"] is not None
+        over = has_budget and sv["pct"] > 100
+        pct_cls = "pa-chip--sev-high" if over else "pa-chip--sev-low"
+        chip = f'${sv["used"]} / ${sv["budget"]} &middot; {sv["pct"]}%' if has_budget else f'${sv["used"]}'
+        unrl_cls = "pos" if sv["unrealized"].startswith("+") else "neg" if sv["unrealized"].startswith("-") else ""
+        syms = "".join(f'<span class="pa-notif-sym">{escape(s)}</span>' for s in sv["symbols"])
+        out.append(
+            '<div class="pa-notif-sleeve">'
+            f'<div class="pa-notif-sleeve__hd"><span class="pa-notif-sleeve__name">{escape(sv["name"])}</span>'
+            f'<span class="pa-chip {pct_cls}">{chip}</span></div>'
+            f'<div class="pa-notif-sleeve__sub">unrealized <span class="{unrl_cls}">{escape(sv["unrealized"])}</span>'
+            f' &middot; {sv["position_count"]} position(s)</div>'
+            + (f'<div class="pa-notif-syms">{syms}</div>' if syms else "")
+            + '</div>'
+        )
+
+    if parsed.get("working_orders"):
+        items = "".join(f'<li>{escape(o)}</li>' for o in parsed["working_orders"])
+        out.append(f'<div class="pa-notif-lead" style="margin-top:12px">Working orders</div><ul class="pa-notif-orders">{items}</ul>')
+
+    if parsed.get("trailer"):
+        out.append(f'<p class="pa-notif-trailer">{escape(parsed["trailer"])}</p>')
+
+    return "".join(out)
+
+
+def _notification_body_html(message: str) -> str:
+    """The engine's own session-report shape gets typeset; anything else
+    (a watchdog alert, the short session-starting ping) still gets the safe
+    escaped-and-<br>ed fallback rather than a blank page."""
+    if not message:
+        return "(no message body)"
+    parsed = parse_session_report(message)
+    return session_report_html(parsed) if parsed else _multiline_html(message)
+
+
+def notification_rows_html(rows: list[dict]) -> str:
+    """rows: when, severity, title, message, via, delivered (bool), error (str|None).
+
+    Each row is a native <details>/<summary>: click to expand shows the full
+    message, hover shows a one-line preview via the title= attribute, and
+    neither depends on Streamlit's own expander (or its icon font).
+    """
+    if not rows:
+        return '<p style="color:#6e6e73">No notifications yet.</p>'
+    sev_cls = {"high": "pa-chip--sev-high", "default": "pa-chip--sev-default"}
+    out = ['<div class="pa-notif-list">']
+    for r in rows:
+        sev = str(r.get("severity") or "default")
+        cls = sev_cls.get(sev, "pa-chip--sev-low")
+        title = str(r.get("title") or "(no title)")
+        message = str(r.get("message") or "")
+        tooltip = _one_line(title + (" -- " + message if message else ""), 240)
+        delivered = r.get("delivered")
+        status = "delivered" if delivered else ("failed: " + str(r.get("error") or "unknown")[:80] if r.get("error") else "not delivered")
+        out.append(
+            f'<details class="pa-notif-row"><summary title="{escape(tooltip)}">'
+            f'<span class="pa-notif-when">{escape(str(r.get("when") or ""))}</span>'
+            f'<span class="pa-chip {cls}">{escape(sev)}</span>'
+            f'<span class="pa-notif-title">{escape(title)}</span>'
+            f'<span class="pa-notif-via">{escape(str(r.get("via") or ""))} &middot; {escape(status)}</span>'
+            f'</summary><div class="pa-notif-body">{_notification_body_html(message)}'
+            f'<div class="pa-notif-meta">via {escape(str(r.get("via") or "unknown"))} &middot; {escape(status)}</div>'
+            f'</div></details>'
+        )
+    out.append('</div>')
+    return "".join(out)
 
 
 def positions_table_html(rows: list[dict]) -> str:

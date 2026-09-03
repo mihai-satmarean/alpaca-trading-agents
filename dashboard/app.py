@@ -597,6 +597,29 @@ def _ntfy_live(topic: str, since: str = "12h",
     return list(reversed(out))[:limit], None
 
 
+def _unread_notification_count(journal: list[dict], session_state=None) -> int:
+    """How many journal entries arrived since this browser session opened.
+
+    Streamlit reruns the whole script on every interaction and renders every
+    tab's body regardless of which one is visually selected, so there is no
+    signal here for "the user actually looked at this tab" -- only "this
+    session has been open since T". The baseline is set once, to the newest
+    entry already on file at page load, so a fresh session opens at zero
+    rather than counting the entire history as unread. "Mark all as read"
+    lets the viewer clear it explicitly rather than guessing when they did.
+
+    session_state defaults to Streamlit's real one; a plain dict works
+    identically here (get/set/`in`) and is what the tests pass, since
+    st.session_state has no meaning outside a running Streamlit script.
+    """
+    session_state = st.session_state if session_state is None else session_state
+    newest_at_load = journal[0].get("ts", "") if journal else ""
+    if "notif_seen_before" not in session_state:
+        session_state["notif_seen_before"] = newest_at_load
+    baseline = session_state["notif_seen_before"]
+    return sum(1 for j in journal if (j.get("ts") or "") > baseline)
+
+
 def render_notifications():
     """What the engine has been saying, and whether it arrived.
 
@@ -641,19 +664,24 @@ def render_notifications():
                 "not continuously.")
         return
 
-    rows = []
-    for j in journal:
-        rows.append({
-            "When (UTC)": (j.get("ts") or "")[:19].replace("T", " "),
-            "Severity": j.get("severity", ""),
-            "Title": (j.get("title") or "")[:70],
-            "Via": j.get("transport") or "-",
-            "Delivered": "yes" if j.get("delivered") else "NO",
-        })
-    if rows:
-        st.markdown("**Send journal** (durable, includes failures)")
-        st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True,
-                     height=min(320, 40 + 35 * len(rows)))
+    if journal:
+        col_hdr, col_btn = st.columns([4, 1])
+        col_hdr.markdown("**Send journal** (durable, includes failures) "
+                         "&mdash; click a row for the full message")
+        if col_btn.button("Mark all as read", use_container_width=True):
+            st.session_state["notif_seen_before"] = journal[0].get("ts", "")
+            st.rerun()
+        from dashboard.theme import notification_rows_html
+        rows = [{
+            "when": (j.get("ts") or "")[:19].replace("T", " "),
+            "severity": j.get("severity", "default"),
+            "title": j.get("title") or "",
+            "message": j.get("message") or "",
+            "via": j.get("transport") or "-",
+            "delivered": j.get("delivered", False),
+            "error": j.get("error"),
+        } for j in journal]
+        st.markdown(notification_rows_html(rows), unsafe_allow_html=True)
 
     if live:
         st.markdown("**Currently on ntfy** (last 12h, as delivered)")
@@ -829,10 +857,14 @@ def main():
     render_sleeves(allocator)
     st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
+    from src.core.notify import read_journal
+    unread = _unread_notification_count(read_journal(limit=200), st.session_state)
+    notif_label = f"Notifications \U0001F534 {unread}" if unread else "Notifications"
+
     (tab_overview, tab_council, tab_sixfold, tab_scanner,
      tab_notifications, tab_history) = st.tabs([
         "Live Overview", "AI Council", "SIXFOLD Analysis", "Options Scanner",
-        "Notifications", "Trade History"
+        notif_label, "Trade History"
     ])
 
     with tab_council:

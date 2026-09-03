@@ -74,7 +74,7 @@ ALLOW_REALLOCATION = os.environ.get("DASHBOARD_ALLOW_REALLOCATION", "").strip() 
 LLM_TEMPERATURE = 0.3
 LLM_MAX_TOKENS = 2048
 TOKEN_BUDGET_PCT = 3000
-RESERVE_PCT_MIN = 0.05
+RESERVE_PCT_MIN = 0.01   # was 0.05; Frank 2026-09-03: 1% is fine (the risk layer's $5,000 min cash binds separately)
 NORMALIZE_TOTAL = 1.0
 CHARS_PER_TOKEN = 4
 # One attempt, generous timeout. A thinking model with a 4096-token budget
@@ -147,7 +147,7 @@ allocation:
 
 Rules:
 - All percentages must sum to 1.00
-- Reserve must be >= 0.05 (minimum 5%)
+- Reserve must be >= 0.01 (minimum 1%)
 - Be specific: "increase vampire from 15% to 25%" not "consider increasing"
 - If the current allocation is already optimal, say so explicitly
 """

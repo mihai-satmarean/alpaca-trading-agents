@@ -23,8 +23,16 @@ class TestValidation:
         ok, msg = C._validate_allocation(GOOD)
         assert ok, msg
 
+    def test_one_percent_reserve_passes_the_floor(self):
+        ok = dict(GOOD, reserve_pct=0.01, sixfold_pct=0.69)
+        valid, _ = C._validate_allocation(ok)
+        assert valid, "1% is the floor Frank set on 2026-09-03; it must pass"
+        assert C.RESERVE_PCT_MIN == 0.01
+
     def test_reserve_floor_and_total_are_enforced(self):
-        bad = dict(GOOD, reserve_pct=0.02, sixfold_pct=0.68)
+        # Floor is 1% since 2026-09-03 (Frank: "fine for reserve to be 1%");
+        # 2% used to be the failing case and is now a valid one.
+        bad = dict(GOOD, reserve_pct=0.005, sixfold_pct=0.695)
         assert not C._validate_allocation(bad)[0]
         assert not C._validate_allocation(dict(GOOD, sixfold_pct=0.90))[0]
 

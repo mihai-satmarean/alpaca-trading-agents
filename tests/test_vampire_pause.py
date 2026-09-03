@@ -13,12 +13,17 @@ stop trading that would otherwise happen.
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from unittest.mock import MagicMock
 
 from src.strategies.vampire_engine import VampireConfig, VampireEngine, VampireState
 
-TODAY = date.today()
+# The engine compares paused_until against the EASTERN date. A test that takes
+# the machine's date fails on the UTC box every evening after 8 PM ET, when
+# UTC is already tomorrow: the "resume date itself" is then still a day away
+# in New York and the engine correctly stays paused.
+TODAY = datetime.now(ZoneInfo("America/New_York")).date()
 TOMORROW = (TODAY + timedelta(days=1)).isoformat()
 YESTERDAY = (TODAY - timedelta(days=1)).isoformat()
 

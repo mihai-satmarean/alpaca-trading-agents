@@ -61,12 +61,19 @@
 # The five points go to SIXFOLD, the only sleeve with candidates to buy (100
 # names scored 60+ on the first S&P 400 scan). The risk layer's $5,000
 # min_cash_reserve below is unchanged and still binds independently.
+# 2026-09-02 evening, Frank: "allocate 5% from reserve to the vampire". The
+# Vampire returns behind the LLM regime gate that PR #85 measured on the week's
+# real fills: dell4-chat would have removed -$93 of -$119 across two sessions
+# (p = 0.20, the right sign, not proof). $5,000 is $2,500 per symbol, about 3
+# QQQ or 36 TQQQ shares per engine, with the $50 per-symbol daily-loss breaker
+# below. The reserve line goes to zero; the risk layer's $5,000 min_cash_reserve
+# still binds independently.
 allocation:
-  sixfold_pct: 0.75      # Tashi SIXFOLD, was 0.70
+  sixfold_pct: 0.75      # Tashi SIXFOLD
   options_pct: 0.15      # CSP
-  vampire_pct: 0.00      # Vampire RETIRED on measured expectancy (see above)
+  vampire_pct: 0.05      # Vampire, re-funded from reserve behind the LLM regime gate
   pendulum_pct: 0.05     # Tashi Pendulum
-  reserve_pct: 0.05      # buffer, was 0.10
+  reserve_pct: 0.00      # buffer, was 0.05; min_cash_reserve $5,000 binds in the risk layer
 
 # Pendulum -- mean reversion on long-duration Treasuries, Tashi's spec v1.1.
 #

@@ -13,6 +13,7 @@ be tested without Streamlit. Streamlit only ever receives strings.
 
 from __future__ import annotations
 
+import re
 from html import escape
 
 INK = "#1d1d1f"
@@ -320,6 +321,11 @@ def _one_line(text: str, limit: int) -> str:
     truncation nicety, it is the actual fix.
     """
     collapsed = " ".join(text.split())
+    # The preview is plain text in a native tooltip: markdown's ** and _
+    # markers would show up literally, which is the "cryptic" look Frank
+    # called out. Strip the markers; the expanded body typesets them properly.
+    collapsed = collapsed.replace("**", "")
+    collapsed = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", collapsed)
     return collapsed[:limit]
 
 
@@ -335,8 +341,6 @@ def _multiline_html(text: str) -> str:
     """
     return escape(text).replace("\n", "<br>")
 
-
-import re
 
 _SESSION_STAT_RE = re.compile(r"\*\*(Equity|Cash|Day P&L)\*\*\s*([+-]?\$[\d,]+\.?\d*)")
 # "Unattributed" has no sleeve budget: "**Unattributed** $7,025" rather than

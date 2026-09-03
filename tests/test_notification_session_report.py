@@ -87,6 +87,17 @@ class TestNoBlankLineSurvivesRendering:
         assert m and "\n" not in m.group(1)
 
 
+class TestTooltipPreviewIsPlainText:
+    def test_markdown_markers_are_stripped_from_the_hover_preview(self):
+        rows = [{"when": "x", "severity": "default", "title": "FIRST CYCLE", "message": FIRST_CYCLE,
+                "via": "ntfy", "delivered": True}]
+        import re
+        html = notification_rows_html(rows)
+        tooltip = re.search(r'title="([^"]*)"', html).group(1)
+        assert "**" not in tooltip and "_Fifteen" not in tooltip
+        assert "Fifteen minutes in" in tooltip and "Equity $99,907.49" in tooltip
+
+
 class TestParseSessionReport:
     def test_the_lead_sentence_is_extracted_without_its_underscores(self):
         p = parse_session_report(FIRST_CYCLE)

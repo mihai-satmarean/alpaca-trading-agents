@@ -1,0 +1,323 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ProductAdvisors Trading Agent</title>
+<meta name="description" content="Alpaca AI Trading Agents Hackathon submission: a four-sleeve options-and-equity agent that measures what it does and cuts what loses.">
+<style>
+:root{
+  --ink:#1d1d1f; --ground:#ffffff; --band:#f5f5f7; --hair:#e5e5ea; --text:#1d1d1f; --muted:#6e6e73; --muted-2:#8e8e93;
+  --accent:#503AA8; --accent-soft:#8a6ff0; --up:#1f8a4c; --down:#c2413b; --hero:#1d1d1f; --hero-text:#ffffff; --hero-muted:#b8b8bd;
+  --card:#ffffff; --chip:#f3effc; --chip-text:#503AA8; --shadow:0 8px 28px rgba(0,0,0,.07); --shadow-hover:0 20px 60px rgba(0,0,0,.12);
+  --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display","Helvetica Neue",Helvetica,Arial,sans-serif;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --ground:#0a0a0a; --band:#141416; --hair:#2d2d30; --text:#f5f5f7; --muted:#b8b8bd; --muted-2:#8e8e93; --card:#1d1d1f;
+  --chip:#2a2440; --chip-text:#c9b9ff; --accent:#8a6ff0; --hero:#000000; --shadow:0 8px 28px rgba(0,0,0,.5); --shadow-hover:0 20px 60px rgba(0,0,0,.6);
+}}
+:root[data-theme="dark"]{
+  --ground:#0a0a0a; --band:#141416; --hair:#2d2d30; --text:#f5f5f7; --muted:#b8b8bd; --muted-2:#8e8e93; --card:#1d1d1f;
+  --chip:#2a2440; --chip-text:#c9b9ff; --accent:#8a6ff0; --hero:#000000; --shadow:0 8px 28px rgba(0,0,0,.5); --shadow-hover:0 20px 60px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){ html{scroll-behavior:auto} *{transition:none!important;animation:none!important} }
+body{margin:0;background:var(--ground);color:var(--text);font-family:var(--font);font-size:16px;line-height:1.55;-webkit-font-smoothing:antialiased}
+a{color:var(--accent)}
+.wrap{max-width:1120px;margin:0 auto;padding:0 28px}
+.eyebrow{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent);margin:0 0 14px}
+h1,h2,h3{margin:0;letter-spacing:-.02em;text-wrap:balance}
+h2{font-size:34px;font-weight:700;line-height:1.15;margin-bottom:18px}
+h3{font-size:19px;font-weight:600}
+p{margin:0 0 14px;max-width:68ch}
+.num{font-variant-numeric:tabular-nums}
+.pos{color:var(--up)} .neg{color:var(--down)}
+/* nav */
+.nav{position:sticky;top:0;z-index:50;background:color-mix(in srgb,var(--ground) 86%,transparent);backdrop-filter:saturate(180%) blur(14px);border-bottom:1px solid var(--hair)}
+.nav .wrap{display:flex;align-items:center;gap:26px;height:56px}
+.brand{font-weight:700;letter-spacing:-.01em;margin-right:auto;white-space:nowrap}
+.brand span{color:var(--muted);font-weight:500}
+.nav a{color:var(--muted);text-decoration:none;font-size:14px;font-weight:600;padding:6px 2px;border-bottom:2px solid transparent;white-space:nowrap}
+.nav a.on,.nav a:hover{color:var(--text);border-bottom-color:var(--accent)}
+.nav a:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+@media (max-width:860px){ .nav a{display:none} .nav a.on{display:inline-block} }
+/* hero */
+.hero{background:var(--hero);color:var(--hero-text);padding:64px 0 56px}
+.hero .eyebrow{color:var(--hero-muted)}
+.hero h1{font-size:44px;font-weight:700;line-height:1.08;max-width:22ch}
+.hero p.lede{color:var(--hero-muted);font-size:18px;margin-top:18px;max-width:60ch}
+.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:32px;margin-top:44px;padding-top:32px;border-top:1px solid #2d2d30}
+.stat .v{font-size:52px;font-weight:700;letter-spacing:-.035em;line-height:1}
+.stat .l{font-size:12px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--hero-muted);margin-top:10px}
+.stat .s{color:var(--hero-muted);font-size:14px;margin-top:4px}
+@media (max-width:760px){ .stats{grid-template-columns:1fr} .hero h1{font-size:34px} .stat .v{font-size:42px} }
+/* sections */
+section{padding:64px 0}
+section.band{background:var(--band)}
+.grid2{display:grid;grid-template-columns:1.1fr .9fr;gap:48px;align-items:start}
+@media (max-width:860px){ .grid2{grid-template-columns:1fr} }
+.cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px}
+@media (max-width:1000px){ .cards{grid-template-columns:repeat(2,minmax(0,1fr))} }
+@media (max-width:560px){ .cards{grid-template-columns:1fr} }
+.card{background:var(--card);border:1px solid var(--hair);border-radius:18px;padding:22px 22px 18px;box-shadow:var(--shadow);transition:transform .2s cubic-bezier(.4,0,.2,1),box-shadow .2s}
+.card:hover{transform:translateY(-2px);box-shadow:var(--shadow-hover)}
+.card .lbl{font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.card .big{font-size:40px;font-weight:700;letter-spacing:-.03em;line-height:1;margin:12px 0 6px}
+.card .sub{color:var(--muted);font-size:14px}
+.card details{margin-top:12px;border-top:1px solid var(--hair);padding-top:10px}
+.card summary{cursor:pointer;font-weight:600;font-size:14px;color:var(--text);list-style:none}
+.card summary::-webkit-details-marker{display:none}
+.card summary::before{content:"\203A";display:inline-block;width:14px;color:var(--muted);transition:transform .15s}
+.card details[open] summary::before{transform:rotate(90deg)}
+.card details p{font-size:14px;color:var(--muted);margin:8px 0 0}
+.chip{display:inline-block;font-size:11px;font-weight:600;letter-spacing:.03em;padding:4px 10px;border-radius:999px;background:var(--chip);color:var(--chip-text);border:1px solid transparent}
+.chip.ok{background:#e9f6ee;color:var(--up)} .chip.warn{background:#fdf1f0;color:var(--down)}
+:root[data-theme="dark"] .chip.ok, :root:not([data-theme="light"]) .chip.ok{background:#12301d} 
+:root[data-theme="dark"] .chip.warn, :root:not([data-theme="light"]) .chip.warn{background:#3a1a18}
+@media (prefers-color-scheme: light){ :root:not([data-theme="dark"]) .chip.ok{background:#e9f6ee} :root:not([data-theme="dark"]) .chip.warn{background:#fdf1f0} }
+/* lists */
+.rules{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 32px;margin:0;padding:0;list-style:none}
+.rules li{padding:14px 0;border-bottom:1px solid var(--hair);font-size:15px}
+.rules li b{display:block;margin-bottom:2px}
+@media (max-width:760px){ .rules{grid-template-columns:1fr} }
+/* table */
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th{text-align:left;font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;color:var(--muted-2);padding:0 12px 10px;border-bottom:1px solid var(--hair)}
+td{padding:12px;border-bottom:1px solid var(--hair);font-size:15px;vertical-align:top}
+td.n,th.n{text-align:right;white-space:nowrap}
+td.note{color:var(--muted);font-size:13px}
+tfoot td{font-weight:700;border-top:1px solid var(--text);border-bottom:none}
+/* chart */
+.chart-card{background:var(--card);border:1px solid var(--hair);border-radius:18px;padding:22px;box-shadow:var(--shadow)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-bottom:10px;font-size:13px}
+.legend label{display:flex;align-items:center;gap:8px;cursor:pointer;color:var(--muted)}
+.legend input{accent-color:var(--accent)}
+.legend i{display:inline-block;width:18px;height:3px;border-radius:2px}
+svg.chart{width:100%;height:auto;display:block}
+.tip{position:absolute;pointer-events:none;background:var(--ink);color:#fff;font-size:12px;padding:8px 10px;border-radius:10px;white-space:nowrap;transform:translate(-50%,-115%);opacity:0;transition:opacity .12s;box-shadow:var(--shadow)}
+.chart-host{position:relative}
+.bars{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 28px;font-size:14px}
+.bar{display:grid;grid-template-columns:64px 1fr 70px;align-items:center;gap:10px}
+.bar i{display:block;height:10px;border-radius:5px;background:var(--up)}
+.bar.neg i{background:var(--down)}
+.bar .sym{font-weight:600}
+@media (max-width:640px){ .bars{grid-template-columns:1fr} }
+/* checklist */
+.check{display:grid;grid-template-columns:220px 1fr;gap:12px 18px;align-items:start}
+.check > div{padding:12px 0;border-bottom:1px solid var(--hair);font-size:15px}
+.check .k{font-weight:600}
+@media (max-width:640px){ .check{grid-template-columns:1fr} .check .k{border-bottom:none;padding-bottom:0} }
+.foot{padding:36px 0 56px;color:var(--muted);font-size:13px;border-top:1px solid var(--hair)}
+.kv{color:var(--muted);font-size:14px}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;background:var(--band);padding:2px 6px;border-radius:6px}
+</style>
+</head>
+<body>
+<nav class="nav"><div class="wrap">
+  <div class="brand">ProductAdvisors <span>· Alpaca AI Trading Agents Hackathon</span></div>
+  <a href="#what">What it is</a><a href="#ai">AI logic</a><a href="#risk">Risk</a><a href="#measured">Measured</a><a href="#sim">30-day simulation</a><a href="#claims">What we don't claim</a><a href="#submission">Submission</a>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <p class="eyebrow">Team ProductAdvisors · paper account PA3TPECBLC29 · September 2026</p>
+  <h1>An agent that measures what it does and cuts what loses.</h1>
+  <p class="lede">Four independent strategy sleeves on one Alpaca paper account. Every entry, exit, size and stop is deterministic. Two self-hosted model councils sit where judgment genuinely helps, and neither can place an order. When the broker's own fill ledger said a sleeve was losing, the agent retired it mid-competition, then re-admitted it only behind a gate it had measured first.</p>
+  <div class="stats">
+    <div class="stat"><div class="v num">$100,552</div><div class="l">Live account, Sep 3</div><div class="s num">+$989 (+0.99%) today · +$552 (+0.55%) since $100,000</div></div>
+    <div class="stat"><div class="v num">$101,085</div><div class="l">30-day simulation, bars only</div><div class="s num">+1.08% · max drawdown −1.04% · QQQ +1.27%, SPY +1.48%</div></div>
+    <div class="stat"><div class="v num">665</div><div class="l">Automated tests</div><div class="s">73 merged PRs in 7 days · every risk guard mutation-tested</div></div>
+  </div>
+</div></header>
+
+<section id="what"><div class="wrap">
+  <p class="eyebrow">What it is</p>
+  <h2>One coordinator, four sleeves, budgets enforced from the broker's book.</h2>
+  <p>Each sleeve carries its own capital budget, recomputed from Alpaca's positions every cycle rather than from the strategy's own counters. A sleeve cannot be charged for another's holdings, and a sleeve over budget stops buying.</p>
+  <div class="cards">
+    <div class="card"><div class="lbl">SIXFOLD · 75%</div><div class="big">Quality equities</div><div class="sub">18 large caps plus the S&amp;P 400, 20 names max</div>
+      <details><summary>Signal</summary><p>Tashi's six-lens fundamental score (moat, ROIC, valuation regression, mismatch, capital signals, historical returns). Buy above 60, sell below 40. A three-model council must approve each buy two to one; it can only veto.</p></details></div>
+    <div class="card"><div class="lbl">CSP · 15%</div><div class="big">Options income</div><div class="sub">Cash-secured puts, 7 to 45 DTE, delta under 0.30</div>
+      <details><summary>Signal</summary><p>Premium yield ranked, open interest over 100, 30% per-name concentration cap. Option quotes come through the Alpaca MCP server; a contract it cannot quote is never priced. One covered call written against the only round lot in the book.</p></details></div>
+    <div class="card"><div class="lbl">Pendulum · 5%</div><div class="big">Mean reversion</div><div class="sub">Long-duration Treasuries (TLT)</div>
+      <details><summary>Signal</summary><p>Enter when the 20-day z-score is under −2.0 and RSI(2) under 10 at once. Exit on reversion, RSI over 70, a 10-day time stop, or a 1.5×ATR hard stop. The same <code>decide()</code> runs in the backtest and live, so the two cannot drift.</p></details></div>
+    <div class="card"><div class="lbl">Vampire · 5%</div><div class="big">Micro-scalper</div><div class="sub">Bi-directional, QQQ and TQQQ</div>
+      <details><summary>Signal</summary><p>Fades 5-second oscillation in both directions. Retired on day 5 at −$663 over 10,470 real fills; re-admitted on day 7 behind an LLM regime gate that opens entries only in "chop". Exits never wait for the model.</p></details></div>
+  </div>
+</div></section>
+
+<section id="ai" class="band"><div class="wrap grid2">
+  <div>
+    <p class="eyebrow">AI logic</p>
+    <h2>The model only where ambiguity exists. It never trades.</h2>
+    <p>Three self-hosted open models on a Dell4 cluster (a finance-tuned model, a general model, Qwen3) vote on every SIXFOLD buy. Two of three must agree, and they gate buys only: an outage can stop the system opening a position but never stop it leaving one.</p>
+    <p>The Vampire gets a second, narrower advisor: every 15 minutes it reads the last 30 one-minute bars and labels the regime. The engine opens lots only in "chop". The model labels; it never decides. When one model answered <code>"chop"</code> and <code>"trade": false</code> in the same breath, we took the label and ignored the flag.</p>
+    <p>Fail closed, everywhere: a missing, stale or unparseable verdict, or an unreachable model, closes entries. Every verdict and every notification is journalled to a SHA-256 hash-chained log that the dashboard verifies on every load.</p>
+  </div>
+  <div>
+    <p class="eyebrow">Measured before wired</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Gate</th><th class="n">Windows off</th><th class="n">P&amp;L removed</th><th class="n">P&amp;L kept</th><th class="n">p</th></tr></thead>
+      <tbody>
+        <tr><td>dell4-finance</td><td class="n">1 of 49</td><td class="n pos">+$5</td><td class="n neg">−$106</td><td class="n">0.73</td></tr>
+        <tr><td>Efficiency ratio</td><td class="n">13 of 49</td><td class="n neg">−$60</td><td class="n neg">−$41</td><td class="n">0.25</td></tr>
+        <tr><td><b>dell4-chat</b></td><td class="n">22 of 49</td><td class="n neg">−$93</td><td class="n neg">−$8</td><td class="n">0.20</td></tr>
+      </tbody>
+    </table></div>
+    <p class="kv" style="margin-top:12px">Scored on 2,828 real fills across two sessions before the gate was wired. The right sign and the largest effect, and not proof: that is what the write-up says too.</p>
+  </div>
+</div></section>
+
+<section id="risk"><div class="wrap">
+  <p class="eyebrow">Risk gates</p>
+  <h2>Discipline is the product.</h2>
+  <ul class="rules">
+    <li><b>Per-trade 5%, per-position 10%, $5,000 minimum cash, 2% daily-loss breaker with a 30-minute cooldown.</b> The breaker is baselined on the broker's previous close, so a restart cannot re-arm it.</li>
+    <li><b>Fills are confirmed by polling the order to a terminal state, never assumed from the submit response.</b> An unreadable fill is assumed filled: under-counting compounds, over-counting only trades less.</li>
+    <li><b>An independent watchdog reads the broker's book every 20 seconds.</b> It contains a sleeve breach by stopping the agent and closing the sleeve, without asking the agent's opinion of its position.</li>
+    <li><b>Rejected submissions count against the rate limiter and back off exponentially.</b> The 4,700-reject storm of August 31 cannot recur.</li>
+    <li><b>The intraday sleeve is flattened at 15:50 ET.</b> Multi-day sleeves and the options book are never touched by that path.</li>
+    <li><b>A post-open health check runs as a separate process</b> and reads its sleeve caps from the live config, so it cannot cry wolf against a stale number.</li>
+  </ul>
+</div></section>
+
+<section id="measured" class="band"><div class="wrap grid2">
+  <div>
+    <p class="eyebrow">What we measured, and what we cut</p>
+    <h2>The ledger retired two strategies mid-competition.</h2>
+    <p>P&amp;L attribution comes from the broker's fill ledger, never from engine counters. On day 4 HOOD and SPY were dropped from the Vampire after losing in every hour of a session. On day 5, across 10,470 real fills, the Vampire stood at −$663 while its internal counter claimed a large profit. A 5-second mean-reversion edge is smaller than the spread it pays.</p>
+    <p>The sleeve was retired and its capital moved to SIXFOLD. Two latent defects in the risk layer were found the same way, from the live log, and fixed with tests that fail if they return. On day 7 the Vampire came back at 5%, behind the regime gate measured above, and posted its first positive gated session with zero rejects.</p>
+  </div>
+  <div>
+    <p class="eyebrow">Live, day 7</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>Vampire, Sep 3</th><th class="n">Orders</th><th class="n">Rejected</th><th class="n">Realized</th></tr></thead>
+      <tbody>
+        <tr><td>QQQ</td><td class="n">131</td><td class="n">0</td><td class="n pos">+$10.30</td></tr>
+        <tr><td>TQQQ</td><td class="n">495</td><td class="n">0</td><td class="n pos">+$2.12</td></tr>
+      </tbody>
+      <tfoot><tr><td>Gated session one</td><td class="n">626</td><td class="n">0</td><td class="n pos">+$12.42</td></tr></tfoot>
+    </table></div>
+    <p class="kv" style="margin-top:12px">Zero rejects all day. One session is a sign, not a result.</p>
+  </div>
+</div></section>
+
+<section id="sim"><div class="wrap">
+  <p class="eyebrow">30-day simulation</p>
+  <h2>If this exact configuration had run since August 4 from $100,000.</h2>
+  <p>Real Alpaca daily bars, the live rules and the live allocation (75 / 15 / 5 / 5 / 0). The solid line is the part that is fully replayable from price data: SIXFOLD marked daily plus Pendulum's own <code>decide()</code>. The dashed line adds a straight-line extrapolation of the CSP sleeve's realized premium. Benchmarks are buy-and-hold over the same 23 sessions.</p>
+  <div class="chart-card">
+    <div class="legend">
+      <label><input type="checkbox" data-s="bars_only" checked><i style="background:var(--accent)"></i>Bars only (SIXFOLD + Pendulum)</label>
+      <label><input type="checkbox" data-s="with_csp" checked><i style="background:var(--accent);opacity:.45"></i>+ CSP extrapolation</label>
+      <label><input type="checkbox" data-s="QQQ"><i style="background:var(--muted-2)"></i>QQQ buy-and-hold</label>
+      <label><input type="checkbox" data-s="SPY"><i style="background:var(--muted)"></i>SPY buy-and-hold</label>
+    </div>
+    <div class="chart-host"><svg class="chart" id="chart" viewBox="0 0 960 340" role="img" aria-label="Simulated equity, August 4 to September 3, 2026"></svg><div class="tip" id="tip"></div></div>
+  </div>
+  <div class="grid2" style="margin-top:36px">
+    <div>
+      <h3 style="margin-bottom:12px">By sleeve</h3>
+      <div class="tbl-wrap"><table>
+        <thead><tr><th>Sleeve</th><th class="n">Capital</th><th class="n">P&amp;L</th><th class="n">Return</th></tr></thead>
+        <tbody><tr><td><b>SIXFOLD</b> <span class="kv">75%</span><div class="note" style="color:var(--muted);font-size:13px;margin-top:2px">Real daily bars, whole-share lots at $3,750 per name, held from Aug 4.</div></td><td class="n">$57,031 deployed of $75,000</td><td class="n pos">+$1,085</td><td class="n">+1.45%</td></tr><tr><td><b>CSP</b> <span class="kv">15%</span><div class="note" style="color:var(--muted);font-size:13px;margin-top:2px">Extrapolation: $844 realized in 5 live sessions, scaled to 23. No historical option quotes on this plan; assignment risk not modelled.</div></td><td class="n">$15,000 collateral target</td><td class="n pos">+$2,876</td><td class="n">+19.17%</td></tr><tr><td><b>Pendulum</b> <span class="kv">5%</span><div class="note" style="color:var(--muted);font-size:13px;margin-top:2px">Zero entries: z-score reached −2.16 once, RSI never met the ≤10 condition at the same time. The rule is built to be rare.</div></td><td class="n">$5,000</td><td class="n pos">+$0</td><td class="n">+0.00%</td></tr><tr><td><b>Vampire</b> <span class="kv">5%</span><div class="note" style="color:var(--muted);font-size:13px;margin-top:2px">One gated session exists. Range spans the pre-gate expectancy and today's gated result; neither is a forecast.</div></td><td class="n">$5,000</td><td class="n neg">−$1,017 to +$286</td><td class="n">range</td></tr></tbody>
+        <tfoot><tr><td>Bars only</td><td class="n">$100,000</td><td class="n pos">+$1,085</td><td class="n pos">+1.08%</td></tr></tfoot>
+      </table></div>
+      <p class="kv" style="margin-top:12px">With the CSP extrapolation the ending equity is $103,960 (+3.96%); adding the Vampire's range gives $102,944 to $104,246. Max drawdown on the bars-only curve: -1.04%.</p>
+    </div>
+    <div>
+      <h3 style="margin-bottom:12px">SIXFOLD, per name</h3>
+      <div class="bars"><div class="bar "><span class="sym">HRB</span><i style="width:100%"></i><span class="num pos" style="text-align:right">+$568</span></div><div class="bar "><span class="sym">AAPL</span><i style="width:47%"></i><span class="num pos" style="text-align:right">+$269</span></div><div class="bar "><span class="sym">NVDA</span><i style="width:44%"></i><span class="num pos" style="text-align:right">+$249</span></div><div class="bar "><span class="sym">META</span><i style="width:38%"></i><span class="num pos" style="text-align:right">+$214</span></div><div class="bar "><span class="sym">ABBV</span><i style="width:38%"></i><span class="num pos" style="text-align:right">+$213</span></div><div class="bar "><span class="sym">MSFT</span><i style="width:36%"></i><span class="num pos" style="text-align:right">+$207</span></div><div class="bar "><span class="sym">V</span><i style="width:30%"></i><span class="num pos" style="text-align:right">+$171</span></div><div class="bar "><span class="sym">KO</span><i style="width:18%"></i><span class="num pos" style="text-align:right">+$100</span></div><div class="bar "><span class="sym">LLY</span><i style="width:16%"></i><span class="num pos" style="text-align:right">+$88</span></div><div class="bar "><span class="sym">PG</span><i style="width:12%"></i><span class="num pos" style="text-align:right">+$70</span></div><div class="bar neg"><span class="sym">COST</span><i style="width:9%"></i><span class="num neg" style="text-align:right">−$52</span></div><div class="bar neg"><span class="sym">FHI</span><i style="width:17%"></i><span class="num neg" style="text-align:right">−$99</span></div><div class="bar neg"><span class="sym">HD</span><i style="width:38%"></i><span class="num neg" style="text-align:right">−$215</span></div><div class="bar neg"><span class="sym">AMZN</span><i style="width:38%"></i><span class="num neg" style="text-align:right">−$219</span></div><div class="bar neg"><span class="sym">UTHR</span><i style="width:40%"></i><span class="num neg" style="text-align:right">−$225</span></div><div class="bar neg"><span class="sym">GOOGL</span><i style="width:45%"></i><span class="num neg" style="text-align:right">−$254</span></div></div>
+      <p class="kv" style="margin-top:12px">$3,750 per name, whole shares, bought at the August 4 open. $17,969 of the sleeve sat idle in whole-share rounding and the four unused slots, which mirrors the live book.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="claims" class="band"><div class="wrap">
+  <p class="eyebrow">What we don't claim</p>
+  <h2>The numbers a skeptic should push on, listed by us first.</h2>
+  <ul class="rules">
+    <li><b>Two sessions of regime-gate data is a sign, not proof.</b> p = 0.20 would need roughly three times the 49 windows we have before it could settle either way.</li>
+    <li><b>This is a paper account.</b> Nothing here has met a real fill, a real borrow or a real margin call. Seven days cannot tell skill from luck on any sleeve.</li>
+    <li><b>The 30-day simulation's CSP line is an extrapolation.</b> This plan has no historical option quotes, so the sleeve's realized premium from five live sessions is scaled to 23. Assignment risk is not modelled. The bars-only line is the one to trust.</li>
+    <li><b>The Vampire signals off Alpaca's free IEX feed and fills against the consolidated book.</b> Live fills landed 12 to 47 cents from that feed's mid on QQQ. A consolidated feed would change its numbers more than any gate.</li>
+    <li><b>CSP sits at about twice its 15% target.</b> Our own morning check hid that for two days behind a hardcoded threshold; it now reads the live config.</li>
+    <li><b>The advisor call fails.</b> When it does, the engine logs it, closes entries, and moves on. Every failure is in the chained journal.</li>
+  </ul>
+</div></section>
+
+<section id="submission"><div class="wrap">
+  <p class="eyebrow">Submission</p>
+  <h2>Every requirement, and where the evidence lives.</h2>
+  <div class="check">
+    <div class="k">Autonomous agent on the Trading API</div><div>alpaca-py for equities, options, IOC and DAY limit orders and closes; runs unattended on EC2 under systemd with a watchdog and a post-open verification timer.</div>
+    <div class="k">MCP server or CLI</div><div>The Alpaca MCP server (<code>alpaca-mcp-server</code> over stdio) supplies live option quotes to the CSP scanner, which refuses to price any contract it cannot quote.</div>
+    <div class="k">Options trading</div><div>Cash-secured puts on eight names (level 3), one covered call (KO $93, Oct 2), a disposal guard so no automated path can naked the call.</div>
+    <div class="k">Fresh $100k paper account</div><div>PA3TPECBLC29, started at $100,000 on August 28.</div>
+    <div class="k">One-page write-up</div><div><a href="https://github.com/mihai-satmarean/alpaca-trading-agents/blob/main/docs/WRITEUP.md">docs/WRITEUP.md</a>: AI logic, risk gates, Alpaca infrastructure, what we measured and cut, what we don't claim.</div>
+    <div class="k">Public repository</div><div><a href="https://github.com/mihai-satmarean/alpaca-trading-agents">github.com/mihai-satmarean/alpaca-trading-agents</a>, 665 tests, 73 merged pull requests in seven days.</div>
+    <div class="k">Application URL</div><div>Live dashboard at <code>http://44.202.110.127:8501/</code> behind a fail-closed access token supplied on the submission form: equity hero and session curve, sleeve budgets from the broker's book, positions ledger, AI Council, SIXFOLD scanner, options scanner, hash-verified notification journal.</div>
+    <div class="k">Video and slides</div><div>This page is the deck. Sections map to the judging criteria: P&amp;L, technology, creativity, presentation.</div>
+    <div class="k">Team</div><div>Frank Villavicencio, Mihai Satmarean, Tashi, Vibhuti Singh · ProductAdvisors</div>
+  </div>
+</div></section>
+
+<footer class="foot"><div class="wrap">Figures on this page: live account as of September 3, 2026, 15:25 ET; simulation on Alpaca daily bars, August 4 to September 3, 2026, adjusted; Vampire gate scored on 2,828 real fills. Built by ProductAdvisors for the lablab.ai × Alpaca AI Trading Agents Hackathon.</div></footer>
+
+<script>
+const DATA = {"dates": ["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28", "2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03"], "series": {"bars_only": [100750.47, 100787.28, 100935.22, 101091.64, 101103.82, 100782.68, 101030.09, 101214.46, 101084.95, 100425.8, 100762.74, 101552.64, 100924.86, 101217.27, 101601.65, 101705.23, 101324.83, 101289.06, 101416.75, 100951.31, 100646.87, 100699.44, 101084.58], "with_csp": [100875.51, 101037.35, 101310.33, 101591.79, 101729.0, 101532.9, 101905.35, 102214.76, 102210.28, 101676.17, 102138.15, 103053.08, 102550.34, 102967.79, 103477.2, 103705.82, 103450.46, 103539.73, 103792.45, 103452.05, 103272.65, 103450.25, 103960.43], "QQQ": [102215.6, 101290.67, 100916.46, 102099.81, 101794.79, 101453.06, 102194.42, 103376.36, 103235.14, 103065.69, 101320.32, 101118.39, 100391.15, 100745.59, 99740.17, 100361.5, 100453.29, 101828.68, 101167.82, 101214.41, 99926.57, 100152.51, 101271.61], "SPY": [101406.73, 101204.26, 101042.56, 101660.47, 101630.23, 101305.5, 101559.23, 102267.86, 102065.39, 101582.9, 100896.63, 101108.29, 100259.0, 100669.18, 100373.37, 100694.16, 100716.51, 101376.49, 101146.42, 100844.04, 100151.19, 100595.56, 101483.64]}};
+(function(){
+  const svg = document.getElementById('chart'), tip = document.getElementById('tip');
+  const W = 960, H = 340, L = 64, R = 18, T = 18, B = 40;
+  const colors = {bars_only: 'var(--accent)', with_csp: 'var(--accent)', QQQ: 'var(--muted-2)', SPY: 'var(--muted)'};
+  const dash = {with_csp: '6 5'};
+  const state = {bars_only: true, with_csp: true, QQQ: false, SPY: false};
+  const money = v => (v < 0 ? '−' : '') + '$' + Math.abs(v).toLocaleString('en-US', {maximumFractionDigits: 0});
+  function draw(){
+    const keys = Object.keys(state).filter(k => state[k]);
+    const all = keys.flatMap(k => DATA.series[k]);
+    const lo = Math.min(...all, 100000) - 300, hi = Math.max(...all, 100000) + 300;
+    const n = DATA.dates.length;
+    const x = i => L + (W - L - R) * i / (n - 1);
+    const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+    let s = '';
+    const ticks = 5;
+    for (let t = 0; t <= ticks; t++){
+      const v = lo + (hi - lo) * t / ticks, yy = y(v);
+      s += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--hair)" stroke-width="1"/>`;
+      s += `<text x="${L - 8}" y="${yy + 4}" font-size="11" text-anchor="end" fill="var(--muted-2)" font-family="var(--font)">${money(v)}</text>`;
+    }
+    const y100 = y(100000);
+    s += `<line x1="${L}" x2="${W - R}" y1="${y100}" y2="${y100}" stroke="var(--muted-2)" stroke-dasharray="2 4" stroke-width="1"/>`;
+    DATA.dates.forEach((d, i) => { if (i % 4 === 0 || i === n - 1) s += `<text x="${x(i)}" y="${H - 14}" font-size="11" text-anchor="middle" fill="var(--muted-2)" font-family="var(--font)">${d.slice(5).replace('-', '/')}</text>`; });
+    for (const k of keys){
+      const pts = DATA.series[k].map((v, i) => `${x(i)},${y(v)}`).join(' ');
+      if (k === 'bars_only'){
+        s += `<polygon points="${x(0)},${y100} ${pts} ${x(n - 1)},${y100}" fill="var(--accent)" opacity="0.08"/>`;
+      }
+      s += `<polyline points="${pts}" fill="none" stroke="${colors[k]}" stroke-width="${k === 'bars_only' ? 2.5 : 1.8}" ${dash[k] ? `stroke-dasharray="${dash[k]}"` : ''} stroke-linejoin="round" stroke-linecap="round" opacity="${k === 'with_csp' ? 0.55 : 1}"/>`;
+      const last = DATA.series[k][n - 1];
+      s += `<circle cx="${x(n - 1)}" cy="${y(last)}" r="4" fill="${colors[k]}"/>`;
+    }
+    s += `<line id="cross" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--text)" stroke-width="1" opacity="0"/>`;
+    svg.innerHTML = s;
+    svg.onmousemove = e => {
+      const r = svg.getBoundingClientRect(); const px = (e.clientX - r.left) * W / r.width;
+      let i = Math.round((px - L) / (W - L - R) * (n - 1)); i = Math.max(0, Math.min(n - 1, i));
+      const cross = svg.getElementById('cross'); cross.setAttribute('x1', x(i)); cross.setAttribute('x2', x(i)); cross.setAttribute('opacity', '0.35');
+      const lines = keys.map(k => `${({bars_only: 'Bars only', with_csp: 'With CSP', QQQ: 'QQQ', SPY: 'SPY'})[k]} ${money(DATA.series[k][i])}`).join('<br>');
+      tip.innerHTML = `<b>${DATA.dates[i]}</b><br>${lines}`;
+      tip.style.left = (x(i) * r.width / W) + 'px'; tip.style.top = (T * r.height / H) + 'px'; tip.style.opacity = '1';
+    };
+    svg.onmouseleave = () => { tip.style.opacity = '0'; const c = svg.getElementById('cross'); if (c) c.setAttribute('opacity', '0'); };
+  }
+  document.querySelectorAll('.legend input').forEach(el => el.addEventListener('change', () => { state[el.dataset.s] = el.checked; draw(); }));
+  draw();
+  const links = [...document.querySelectorAll('.nav a')];
+  const obs = new IntersectionObserver(es => { es.forEach(en => { if (en.isIntersecting){ links.forEach(a => a.classList.toggle('on', a.getAttribute('href') === '#' + en.target.id)); } }); }, {rootMargin: '-40% 0px -55% 0px'});
+  document.querySelectorAll('section[id]').forEach(sec => obs.observe(sec));
+})();
+</script>
+</body>
+</html>

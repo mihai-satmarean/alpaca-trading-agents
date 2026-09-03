@@ -30,7 +30,19 @@ ET = ZoneInfo("America/New_York")
 LOG = "/opt/alpaca-agent/logs/session.err"
 SCALPER = {"QQQ", "SPY", "HOOD", "TQQQ", "SOXL"}
 OCC = re.compile(r"^([A-Z]{1,6})(\d{6})([CP])(\d{8})$")
-CAPS = {"Vampire": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
+# 2026-09-03: this used to be a frozen dict, right for whatever the split was
+# on the day someone wrote it and silently wrong every time the split changed
+# since. It said "SixFold over cap" all morning against the live 75% target
+# because the number here still said 50%. Derive it from the same file the
+# allocator reads, every call, so it can never go stale again.
+def sleeve_caps(equity: float) -> dict[str, float]:
+    from src.core.config import load_config
+    cfg = load_config()
+    return {"Vampire": equity * cfg.vampire_pct, "CSP": equity * cfg.options_pct,
+            "SixFold": equity * cfg.sixfold_pct}
+
+
+REGIME_LOG = "/opt/alpaca-agent/logs/regime.jsonl"
 REJECT_STORM = 50          # 4,700 in 29 minutes on 2026-08-31
 UNITS = ("alpaca-agent", "alpaca-watchdog")
 
@@ -131,6 +143,37 @@ def fills_today(day: str) -> tuple[Counter, dict]:
     return n, dict(cash)
 
 
+def vampire_gate_opened_today(day: str) -> bool | None:
+    """Did the LLM regime gate say "chop" for either Vampire symbol today?
+
+    True: the gate was open at least once; a fill was possible and didn't
+    happen, which is worth escalating. False: verdicts exist and none was
+    "chop"; zero fills is the gate doing its job. None: no verdicts at all,
+    which on an open market past the first window means the advisor itself
+    may be down -- that stays a problem, same as before this check existed.
+    """
+    try:
+        with open(REGIME_LOG, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError:
+        return None
+    saw_any = False
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        at = rec.get("at")
+        if not at:
+            continue
+        if datetime.fromtimestamp(at, ET).strftime("%Y-%m-%d") != day:
+            continue
+        saw_any = True
+        if rec.get("regime") == "chop":
+            return True
+    return False if saw_any else None
+
+
 def build_report(since: str) -> tuple[str, str, str]:
     now = datetime.now(ET)
     day = now.strftime("%Y-%m-%d")
@@ -164,14 +207,28 @@ def build_report(since: str) -> tuple[str, str, str]:
         sleeve, amount = collateral(p["symbol"], float(p["qty"]), float(p["market_value"]))
         used[sleeve] += amount
     marks = {p["symbol"]: float(p["market_value"]) for p in _api("/v2/positions")}
-    for sleeve, cap in CAPS.items():
+    caps = sleeve_caps(equity)
+    for sleeve, cap in caps.items():
         if used[sleeve] > cap * 1.02:
             problems.append(f"{sleeve} over cap")
 
     n, cash = fills_today(day)
     total_fills = sum(n.values())
     if total_fills == 0 and session_open:
-        problems.append("zero Vampire fills")
+        # Since PR #85/#86 zero fills has a legitimate cause: the LLM regime
+        # gate only opens entries in "chop", and it correctly stayed shut all
+        # morning of 2026-09-03 while dell4-chat read trend_up. Flagging that
+        # as a "PROBLEM" every trending morning is the same staleness bug as
+        # the hardcoded caps above, just against a design that predates the
+        # gate. Distinguish "the gate said no" (expected, not a problem) from
+        # "the gate never got a verdict" (the advisor may be dead) and "the
+        # gate said yes and nothing happened anyway" (a real failure).
+        gate_open_today = vampire_gate_opened_today(day)
+        if gate_open_today is None:
+            problems.append("zero Vampire fills, no regime verdicts today")
+        elif gate_open_today:
+            problems.append("zero Vampire fills despite an open regime gate")
+        # gate_open_today is False: the gate never said chop. Working as designed.
 
     if problems:
         headline = "PROBLEM: " + "; ".join(problems)
@@ -192,7 +249,7 @@ def build_report(since: str) -> tuple[str, str, str]:
     else:
         lines.append("Vampire: no fills yet")
 
-    lines.append("  ".join(f"{s} ${used[s]:,.0f}/{CAPS[s]:,.0f}" for s in ("Vampire", "CSP", "SixFold")))
+    lines.append("  ".join(f"{s} ${used[s]:,.0f}/{caps[s]:,.0f}" for s in ("Vampire", "CSP", "SixFold")))
     lines.append("  ".join(unit_lines))
     lines.append("log: " + (", ".join(f"{k}={v}" for k, v in sorted(sig.items())) or "clean"))
 

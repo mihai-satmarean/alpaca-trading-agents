@@ -952,7 +952,7 @@ def main():
         if st.button("Refresh Now"):
             st.rerun()
     with col_r2:
-        auto = st.checkbox("Auto-refresh (15s)", value=False)
+        auto = st.checkbox("Auto-refresh (15s)", value=True)   # on by default, Frank 2026-09-03
         if auto:
             time.sleep(15)
             st.rerun()

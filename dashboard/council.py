@@ -47,8 +47,17 @@ LITELLM_KEY = (os.environ.get("LITELLM_KEY") or os.environ.get("OPENAI_API_KEY")
 # that is reachable from his desk and not from the instance.
 COUNCIL_MODELS = [
     {"id": "dell4-finance", "label": "dell4-finance", "base_url": LITELLM_DELL4, "max_tokens": 4096},
-    {"id": "dell4-chat", "label": "dell4-chat", "base_url": LITELLM_DELL4, "max_tokens": 4096},
-    {"id": "dell4-qwen38", "label": "dell4-qwen38", "base_url": LITELLM_DELL4, "max_tokens": 4096},
+    # Both Qwen3 reasoning models. Measured 2026-09-03 with the live prompt:
+    # qwen38 spent its whole 4,096-token budget thinking (146 s, finish_reason
+    # "length", zero visible answer) on every call, and dell4-chat used 3,951
+    # of 4,096, so it failed whenever it thought a little longer. The panel
+    # then reported "Could not parse YAML allocation block", which was never
+    # a formatting problem. enable_thinking=false (vLLM's chat_template_kwargs,
+    # honoured through the proxy) makes chat answer in 4.5 s / 474 tokens and
+    # qwen38 in 21 s / 547, both with a clean block. The "/no_think" soft
+    # switch did nothing for qwen38.
+    {"id": "dell4-chat", "label": "dell4-chat", "base_url": LITELLM_DELL4, "max_tokens": 4096, "no_think": True},
+    {"id": "dell4-qwen38", "label": "dell4-qwen38", "base_url": LITELLM_DELL4, "max_tokens": 4096, "no_think": True},
 ]
 
 # Writing config/strategies.yml from a browser tab is off unless the operator
@@ -142,6 +151,23 @@ Rules:
 - Be specific: "increase vampire from 15% to 25%" not "consider increasing"
 - If the current allocation is already optimal, say so explicitly
 """
+
+
+def _vampire_status_phrase(paused_until: str | None) -> str:
+    """paused_until is a date the engine compares against today, not a flag.
+
+    Echoing the raw date told the council "paused until September 2026" a
+    day after the pause had expired, and every proposal built on it. Use the
+    engine's own test so the council is told what the engine believes.
+    """
+    from src.strategies.vampire_engine import VampireConfig, VampireEngine
+    probe = VampireEngine.__new__(VampireEngine)
+    probe.cfg = VampireConfig(symbol="_", paused_until=paused_until)
+    if probe._is_paused():
+        return f"paused until {paused_until}"
+    if paused_until:
+        return f"active (a pause through {paused_until} has expired)"
+    return "active"
 
 
 def _build_portfolio_context(client, allocator, tracker) -> str:
@@ -260,7 +286,7 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
     from src.core.config import load_config as _load_strategy_config
     scfg = _load_strategy_config()
     v = scfg.vampire
-    pause = scfg.vampire_paused_until or "not paused"
+    pause = _vampire_status_phrase(scfg.vampire_paused_until)
     parts.append(
         f"\n## Vampire Config\n"
         f"Symbols: {', '.join(scfg.vampire_symbols) or 'none'}\n"
@@ -268,7 +294,7 @@ def _build_portfolio_context(client, allocator, tracker) -> str:
         f"Position size: {v.get('position_size', 10)}, "
         f"Max position: {v.get('max_position', 100)}\n"
         f"Max daily loss: ${v.get('max_daily_loss', 200)}, "
-        f"Paused until: {pause}"
+        f"Status: {pause}"
     )
 
     return "\n\n".join(parts)
@@ -290,6 +316,8 @@ def _query_model(model_cfg: dict, context: str) -> dict:
         "max_tokens": model_cfg["max_tokens"],
         "temperature": LLM_TEMPERATURE,
     }
+    if model_cfg.get("no_think"):
+        payload["chat_template_kwargs"] = {"enable_thinking": False}
     headers = {"Content-Type": "application/json"}
     if LITELLM_KEY:
         headers["Authorization"] = f"Bearer {LITELLM_KEY}"
@@ -305,12 +333,28 @@ def _query_model(model_cfg: dict, context: str) -> dict:
             with urllib.request.urlopen(req, timeout=MODEL_TIMEOUT_S, context=_SSL_CTX) as resp:
                 data = json.loads(resp.read().decode("utf-8", errors="replace"))
             elapsed = time.monotonic() - start
-            msg = data["choices"][0]["message"]
-            # A reasoning model that spends its budget thinking returns
-            # content None with the text in reasoning_content. The engine's
-            # own council hit this on 2026-09-01; the parser downstream
-            # expects a string, and None crashed the whole page.
-            content = msg.get("content") or msg.get("reasoning_content") or ""
+            choice = data["choices"][0]
+            msg = choice["message"]
+            finish = str(choice.get("finish_reason") or "")
+            content = msg.get("content") or ""
+            if not content.strip() and finish == "length":
+                # The model hit its token budget while still reasoning and
+                # never produced an answer. Substituting the thinking stream
+                # here made the parser fail on it and the panel report
+                # "Could not parse YAML", which blamed the wrong thing.
+                return {
+                    "model": model_cfg["id"],
+                    "label": model_cfg["label"],
+                    "content": "",
+                    "elapsed_s": round(elapsed, 1),
+                    "error": (f"ran out of its {model_cfg['max_tokens']}-token budget while "
+                              f"reasoning; no answer was produced"),
+                }
+            # A reasoning model that finishes cleanly can still leave content
+            # None with the text in reasoning_content. The engine's own council
+            # hit this on 2026-09-01; the parser downstream expects a string,
+            # and None crashed the whole page.
+            content = content or msg.get("reasoning_content") or ""
             return {
                 "model": model_cfg["id"],
                 "label": model_cfg["label"],
@@ -357,7 +401,7 @@ def _parse_yaml_block(text: str | None) -> dict | None:
     import re
 
     # Try fenced YAML block first
-    m = re.search(r"```(?:yaml)?\s*\n(.*?)```", text, re.DOTALL)
+    m = re.search(r"```(?:ya?ml)?\s*\n(.*?)```", text, re.DOTALL)
     raw_yaml = m.group(1) if m else None
 
     if not raw_yaml:

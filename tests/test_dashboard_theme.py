@@ -69,6 +69,21 @@ class TestLedger:
         assert "No open positions" in positions_table_html([])
 
 
+class TestTheGlobalFontRuleExemptsStreamlitIcons:
+    """2026-09-03: the universal font override also caught Streamlit's Material
+    Symbols icon spans, so their ligature text ("keyboard_arrow_right") printed
+    literally instead of resolving to an arrow glyph, overlapping the label next
+    to every expander on the dashboard. This pins the carve-out."""
+
+    def test_the_override_excludes_streamlit_icon_test_ids(self):
+        from dashboard.theme import CSS
+        assert '[data-testid="stAppViewContainer"] *:not([data-testid^="stIcon"])' in CSS
+
+    def test_the_override_no_longer_matches_every_descendant_unconditionally(self):
+        from dashboard.theme import CSS
+        assert '[data-testid="stAppViewContainer"] * {' not in CSS
+
+
 class TestDashboardAllocatorUsesTheConfiguredSplit:
     def test_get_allocator_reads_strategies_yml_not_the_dataclass_defaults(self):
         """The sleeve cards showed CSP 'of $79,644' (the legacy 80% default)

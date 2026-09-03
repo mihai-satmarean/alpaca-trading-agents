@@ -31,7 +31,7 @@ Pendulum's signal is computed by the same `decide()` function in the backtest an
 - Rejected submissions count against the rate limiter and back off exponentially after five in a row.
 - An independent watchdog process reads the broker's book every 20 seconds. It contains a sleeve breach by stopping the agent and closing the sleeve, without consulting the agent's own opinion of its position.
 - The intraday sleeve is flattened at 15:50 ET; multi-day sleeves and the options book are never touched by that path.
-- Every notification is journalled with its delivery outcome, so a failed alert is visible rather than indistinguishable from a quiet system.
+- Every notification and every advisor verdict is journalled with its outcome in a SHA-256 hash-chained log that the dashboard verifies on every load, so a failed alert is visible rather than indistinguishable from a quiet system, and an edited or deleted entry is visible too.
 
 ## Alpaca infrastructure
 
@@ -40,6 +40,15 @@ Trading API via alpaca-py for equities, options (cash-secured puts, level 3 appr
 ## What we measured, and what we cut
 
 P&L attribution comes from the broker's fill ledger, never from engine counters. That ledger retired two strategies mid-competition. We dropped HOOD and SPY from the Vampire on day 4 after they posted losses in every hour of a session. On day 5, across 10,470 real fills, the Vampire stood at −$663 realized while its internal counter claimed a large profit. A 5-second mean-reversion edge is smaller than the spread it pays, and no parameter fixes that. We retired the sleeve and moved its capital to SIXFOLD, the only sleeve with a positive mark. Two latent defects in the risk layer were found the same way, from the live log, and fixed with tests that fail if they return. We think an agent that can tell when it is wrong, and acts on it, is the part worth judging.
+
+## What we don't claim
+
+- Two sessions of regime-gate data is a sign, not proof. The p = 0.20 above would need roughly three times the 49 windows we have before it could settle either way.
+- This is a paper account. Nothing here has met a real fill, a real borrow, or a real margin call, and seven days cannot tell skill from luck on any of the four sleeves.
+- The Vampire signals off Alpaca's free IEX quote feed and fills against the consolidated book. This week's live fills landed 12 to 47 cents from that feed's mid on QQQ. A consolidated feed would change its numbers more than any gate.
+- CSP sits at about twice its 15% target as of this morning. Our own post-open check hid that for two days behind a hardcoded threshold; it now reads the live config.
+- The advisor call fails. Once this morning the model returned empty content and the engine logged "model unavailable". Every failure closes entries, none opens them, and every one is in the journal.
+- The journals are tamper-evident from September 3, not from day one. Earlier entries carry no hash and are reported as such.
 
 ## Results
 

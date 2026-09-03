@@ -9,6 +9,10 @@ is worse than no monitor: it trains you to ignore it.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
+import pytest
+
 import scripts.open_check as oc
 
 
@@ -91,8 +95,93 @@ class TestThresholds:
         """19 rejects was a healthy afternoon; 4,700 was the outage."""
         assert 19 < oc.REJECT_STORM < 4700
 
-    def test_caps_match_the_configured_split_on_100k(self):
-        assert oc.CAPS == {"Vampire": 10_000.0, "CSP": 20_000.0, "SixFold": 50_000.0}
+    def test_caps_are_derived_from_the_live_config_not_a_frozen_snapshot(self):
+        """The prior version of this test pinned a hardcoded dict. It kept
+        passing for two allocation changes after the split it was written
+        against, because it verified nothing about the live config -- it just
+        verified oc.CAPS still equaled itself. That is how "SixFold over cap"
+        fired every morning while SixFold sat under its real 75% target."""
+        from src.core.config import load_config
+        cfg = load_config()
+        caps = oc.sleeve_caps(100_000.0)
+        assert caps == pytest.approx({
+            "Vampire": 100_000.0 * cfg.vampire_pct,
+            "CSP": 100_000.0 * cfg.options_pct,
+            "SixFold": 100_000.0 * cfg.sixfold_pct,
+        })
+
+    def test_caps_scale_with_equity(self):
+        caps = oc.sleeve_caps(200_000.0)
+        assert caps["SixFold"] == pytest.approx(oc.sleeve_caps(100_000.0)["SixFold"] * 2)
+
+
+class TestTheRegimeGateExplainsZeroFills:
+    """2026-09-03: PR #85/#86 gave the Vampire an LLM entry gate that only
+    opens in "chop". A trending morning correctly produces zero fills, and the
+    old unconditional "zero Vampire fills" alarm could not tell that apart
+    from the engine being dead. These pin the three-way split."""
+
+    def _run(self, monkeypatch, tmp_path, *, regime_lines):
+        from collections import Counter
+
+        def fake_api(path):
+            if path == "/v2/clock":
+                return {"is_open": True}
+            if path == "/v2/account":
+                return {"equity": "100000", "last_equity": "100000"}
+            if path.startswith("/v2/positions"):
+                return []
+            raise AssertionError(path)
+
+        if regime_lines is not None:
+            p = tmp_path / "regime.jsonl"
+            p.write_text("\n".join(regime_lines) + ("\n" if regime_lines else ""))
+            monkeypatch.setattr(oc, "REGIME_LOG", str(p))
+        else:
+            monkeypatch.setattr(oc, "REGIME_LOG", str(tmp_path / "nope.jsonl"))
+
+        monkeypatch.setattr(oc, "_api", fake_api)
+        monkeypatch.setattr(oc, "log_signatures", lambda since: {})
+        monkeypatch.setattr(oc, "units_status",
+                            lambda: (["alpaca-agent active restarts=0"], True))
+        monkeypatch.setattr(oc, "fills_today", lambda d: (Counter(), {}))
+        return oc.build_report("09:30:00")
+
+    @staticmethod
+    def _at(days_ago: int = 0) -> float:
+        """A real epoch timestamp on today (or `days_ago` before it), 09:45 ET --
+        real, moving dates rather than a frozen 2026-09-03, so this keeps
+        passing on every future run instead of failing the day after."""
+        target = datetime.now(oc.ET) - timedelta(days=days_ago)
+        return target.replace(hour=9, minute=45, second=0, microsecond=0).timestamp()
+
+    def test_a_trending_morning_with_no_chop_verdicts_is_not_a_problem(self, monkeypatch, tmp_path):
+        ts = self._at()
+        lines = [f'{{"symbol": "QQQ", "regime": "trend_up", "at": {ts}}}',
+                 f'{{"symbol": "TQQQ", "regime": "trend_up", "at": {ts}}}']
+        title, body, severity = self._run(monkeypatch, tmp_path, regime_lines=lines)
+        assert severity == "default", body
+        assert "PROBLEM" not in title
+
+    def test_a_chop_verdict_with_zero_fills_is_still_a_problem(self, monkeypatch, tmp_path):
+        ts = self._at()
+        lines = [f'{{"symbol": "QQQ", "regime": "chop", "at": {ts}}}']
+        _, body, severity = self._run(monkeypatch, tmp_path, regime_lines=lines)
+        assert severity == "high"
+        assert "zero Vampire fills despite an open regime gate" in body
+
+    def test_no_regime_file_at_all_is_still_a_problem(self, monkeypatch, tmp_path):
+        _, body, severity = self._run(monkeypatch, tmp_path, regime_lines=None)
+        assert severity == "high"
+        assert "no regime verdicts today" in body
+
+    def test_yesterdays_chop_verdict_does_not_excuse_today(self, monkeypatch, tmp_path):
+        """A verdict from the wrong calendar day must not count -- the exact
+        bare-time-matching mistake documented in this project's own memory."""
+        lines = [f'{{"symbol": "QQQ", "regime": "chop", "at": {self._at(days_ago=1)}}}']
+        _, body, severity = self._run(monkeypatch, tmp_path, regime_lines=lines)
+        assert severity == "high"
+        assert "no regime verdicts today" in body
 
 
 class TestClosedMarketIsNotAnAlarm:
@@ -103,7 +192,7 @@ class TestClosedMarketIsNotAnAlarm:
     nobody reads by New Year.
     """
 
-    def _run(self, monkeypatch, *, is_open, fills, units=None):
+    def _run(self, monkeypatch, tmp_path, *, is_open, fills, units=None):
         calls = {}
 
         def fake_api(path):
@@ -120,23 +209,31 @@ class TestClosedMarketIsNotAnAlarm:
         monkeypatch.setattr(oc, "units_status",
                             lambda: units or (["alpaca-agent active restarts=0"], True))
         monkeypatch.setattr(oc, "fills_today", lambda day: fills)
+        # This class predates the regime gate and asserts on its absence: no
+        # verdicts anywhere means "advisor status unknown", which stays a
+        # problem. Isolated to a path that can never exist, so these tests
+        # cannot accidentally read whatever machine they happen to run on --
+        # which is exactly how the box's real logs/regime.jsonl silently
+        # flipped two of these from "high" to "default" the first time this
+        # ran somewhere that had genuine trend_up-only verdicts on file.
+        monkeypatch.setattr(oc, "REGIME_LOG", str(tmp_path / "no-such-regime-log.jsonl"))
         calls["out"] = oc.build_report("09:30:00")
         return calls["out"]
 
-    def test_zero_fills_on_a_holiday_is_not_a_problem(self, monkeypatch):
+    def test_zero_fills_on_a_holiday_is_not_a_problem(self, monkeypatch, tmp_path):
         from collections import Counter
-        title, body, severity = self._run(monkeypatch, is_open=False, fills=(Counter(), {}))
+        title, body, severity = self._run(monkeypatch, tmp_path, is_open=False, fills=(Counter(), {}))
         assert severity == "default"
         assert "PROBLEM" not in title and "PROBLEM" not in body
         assert "Market closed" in body
 
-    def test_zero_fills_while_open_is_a_problem(self, monkeypatch):
+    def test_zero_fills_while_open_is_a_problem(self, monkeypatch, tmp_path):
         from collections import Counter
-        title, body, severity = self._run(monkeypatch, is_open=True, fills=(Counter(), {}))
+        title, body, severity = self._run(monkeypatch, tmp_path, is_open=True, fills=(Counter(), {}))
         assert severity == "high"
         assert "zero Vampire fills" in body
 
-    def test_an_unreadable_clock_prefers_the_false_alarm(self, monkeypatch):
+    def test_an_unreadable_clock_prefers_the_false_alarm(self, monkeypatch, tmp_path):
         """Silence is the worse failure: alarm when the state is unknown."""
         from collections import Counter
 
@@ -153,14 +250,15 @@ class TestClosedMarketIsNotAnAlarm:
         monkeypatch.setattr(oc, "log_signatures", lambda since: {})
         monkeypatch.setattr(oc, "units_status", lambda: (["x active restarts=0"], True))
         monkeypatch.setattr(oc, "fills_today", lambda day: (Counter(), {}))
+        monkeypatch.setattr(oc, "REGIME_LOG", str(tmp_path / "no-such-regime-log.jsonl"))
         _, body, severity = oc.build_report("09:30:00")
         assert severity == "high" and "zero Vampire fills" in body
 
-    def test_a_dead_service_alarms_even_on_a_holiday(self, monkeypatch):
+    def test_a_dead_service_alarms_even_on_a_holiday(self, monkeypatch, tmp_path):
         """A closed market excuses no fills. It does not excuse a dead agent."""
         from collections import Counter
         title, body, severity = self._run(
-            monkeypatch, is_open=False, fills=(Counter(), {}),
+            monkeypatch, tmp_path, is_open=False, fills=(Counter(), {}),
             units=(["alpaca-agent inactive restarts=3"], False))
         assert severity == "high"
         assert "service is down" in body

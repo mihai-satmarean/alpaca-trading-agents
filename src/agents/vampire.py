@@ -112,6 +112,7 @@ class VampireAgent:
             except Exception:
                 log.warning("regime refresh failed; entries stay closed until "
                             "the next pass", exc_info=True)
+            self._recalibrate_spreads()
             self._regime_stop.wait(self._advisor.window_seconds)
 
     def _start_regime_loop(self) -> None:
@@ -191,26 +192,34 @@ class VampireAgent:
 
         Setting the trigger to a multiple of the spread makes the engine trade
         rarely and only when the move on offer exceeds what it costs to take it.
+
+        Measured from a WINDOW of the book, not five reads a fifth of a second
+        apart. That old sample was one second of evidence, and run_live starts
+        the agent within 30s of the opening bell, so the one second it saw was
+        the opening auction. QQQ's IEX median spread on 2026-09-03 was $0.740
+        in the first minute and $0.050 by 11:10; the trigger frozen at the open
+        was $2.05 against a book trading at $0.05, and QQQ managed 3 round
+        trips that session while TQQQ, whose penny spread barely moves between
+        the auction and midday, managed 85. This is also re-derived during the
+        session (see _recalibrate_spreads) rather than fixed at startup.
         """
         for sym, engine in self._engines.items():
-            spreads: list[float] = []
-            mids: list[float] = []
-            for _ in range(SPREAD_SAMPLES):
-                try:
-                    quote = self._data.get_latest_quote(sym)
-                    if quote:
-                        bid, ask = float(quote.bid), float(quote.ask)
-                        sp = ask - bid
-                        if sp > 0:
-                            spreads.append(sp)
-                            mids.append((bid + ask) / 2)
-                except Exception:
-                    log.warning("quote read failed for %s", sym, exc_info=True)
-                time.sleep(0.2)
-            price = statistics.median(mids) if mids else 0.0
-            if not spreads:
-                log.warning("no usable quotes for %s; keeping its configured threshold", sym)
+            sample = None
+            try:
+                sample = self._data.recent_spread(sym)
+            except Exception:
+                log.warning("%s: spread window read failed", sym, exc_info=True)
+            if not sample:
+                log.warning(
+                    "%s: no usable spread window; keeping its configured threshold "
+                    "%.4f. A stale wide trigger only stops this symbol trading, "
+                    "which is the cheap direction to be wrong in.",
+                    sym, engine.cfg.tick_threshold,
+                )
                 continue
+            spreads = [sample["median"]]
+            mids = [sample["price"]]
+            price = sample["price"]
             # Median across several reads, not one read: a single quote can
             # catch a momentarily tight book on a name whose spread regime is
             # 10x wider, and the threshold it produces fires on flicker.
@@ -234,8 +243,27 @@ class VampireAgent:
             engine.cfg.tick_threshold = round(
                 max(spread * SPREAD_MULTIPLE, MIN_TICK_THRESHOLD), 4
             )
-            log.info("%s median spread %.3f (%d of %d reads) -> tick_threshold %.4f",
-                     sym, spread, len(usable), len(spreads), engine.cfg.tick_threshold)
+            log.info(
+                "%s spread median %.3f p90 %.3f over %d quotes / %dmin -> "
+                "tick_threshold %.4f",
+                sym, sample["median"], sample["p90"], sample["n"],
+                sample["window_minutes"], engine.cfg.tick_threshold,
+            )
+
+    def _recalibrate_spreads(self) -> None:
+        """Re-derive every threshold mid-session. Never raises.
+
+        The old routine ran once, at startup, and the value it produced was
+        frozen for the whole session -- so a bad read at the open could not be
+        corrected by the book settling down thirty seconds later. This runs on
+        the regime advisor's own timer, so the trigger tracks the book the
+        engine is actually trading against.
+        """
+        try:
+            self._apply_spread_thresholds()
+        except Exception:
+            log.warning("spread recalibration failed; thresholds unchanged",
+                        exc_info=True)
 
     def _apply_sleeve_limits(self) -> None:
         """Split the vampire sleeve across its symbols and cap each engine.

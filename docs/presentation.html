@@ -112,6 +112,30 @@ svg.chart{width:100%;height:auto;display:block}
 .foot{padding:36px 0 56px;color:var(--muted);font-size:13px;border-top:1px solid var(--hair)}
 .kv{color:var(--muted);font-size:14px}
 code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;background:var(--band);padding:2px 6px;border-radius:6px}
+/* print: the same page as a deck. Colors are content here, not decoration. */
+@media print{
+  @page{size:Letter;margin:12mm 12mm 14mm}
+  *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  html{scroll-behavior:auto}
+  .nav{display:none}
+  body{font-size:13.5px}
+  .wrap{padding:0 6mm}
+  .hero{padding:34px 0 30px;border-radius:14px}
+  .hero h1{font-size:34px}
+  .stat .v{font-size:38px}
+  section{padding:30px 0}
+  h2{font-size:26px}
+  #sim,#submission{break-before:page}
+  .card,.chart-card,table,.rules li,.check > div,.bar{break-inside:avoid}
+  h2,h3,.eyebrow{break-after:avoid}
+  .card:hover{transform:none;box-shadow:var(--shadow)}
+  .card summary::before{content:""}
+  .card summary{cursor:default}
+  .tip{display:none}
+  .legend input{display:none}
+  .legend label{color:var(--text)}
+  a{text-decoration:none;color:var(--accent)}
+}
 </style>
 </head>
 <body>
@@ -266,6 +290,8 @@ code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.92em;bac
 <footer class="foot"><div class="wrap">Figures on this page: live account as of September 3, 2026, 15:25 ET; simulation on Alpaca daily bars, August 4 to September 3, 2026, adjusted; Vampire gate scored on 2,828 real fills. Built by ProductAdvisors for the lablab.ai × Alpaca AI Trading Agents Hackathon.</div></footer>
 
 <script>
+// Print (and ?print=1) opens every disclosure so the PDF carries the full text.
+(function(){ const openAll = () => document.querySelectorAll('details').forEach(d => d.open = true); window.addEventListener('beforeprint', openAll); if (/[?&]print=1/.test(location.search)) openAll(); })();
 const DATA = {"dates": ["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", "2026-08-10", "2026-08-11", "2026-08-12", "2026-08-13", "2026-08-14", "2026-08-17", "2026-08-18", "2026-08-19", "2026-08-20", "2026-08-21", "2026-08-24", "2026-08-25", "2026-08-26", "2026-08-27", "2026-08-28", "2026-08-31", "2026-09-01", "2026-09-02", "2026-09-03"], "series": {"bars_only": [100750.47, 100787.28, 100935.22, 101091.64, 101103.82, 100782.68, 101030.09, 101214.46, 101084.95, 100425.8, 100762.74, 101552.64, 100924.86, 101217.27, 101601.65, 101705.23, 101324.83, 101289.06, 101416.75, 100951.31, 100646.87, 100699.44, 101084.58], "with_csp": [100875.51, 101037.35, 101310.33, 101591.79, 101729.0, 101532.9, 101905.35, 102214.76, 102210.28, 101676.17, 102138.15, 103053.08, 102550.34, 102967.79, 103477.2, 103705.82, 103450.46, 103539.73, 103792.45, 103452.05, 103272.65, 103450.25, 103960.43], "QQQ": [102215.6, 101290.67, 100916.46, 102099.81, 101794.79, 101453.06, 102194.42, 103376.36, 103235.14, 103065.69, 101320.32, 101118.39, 100391.15, 100745.59, 99740.17, 100361.5, 100453.29, 101828.68, 101167.82, 101214.41, 99926.57, 100152.51, 101271.61], "SPY": [101406.73, 101204.26, 101042.56, 101660.47, 101630.23, 101305.5, 101559.23, 102267.86, 102065.39, 101582.9, 100896.63, 101108.29, 100259.0, 100669.18, 100373.37, 100694.16, 100716.51, 101376.49, 101146.42, 100844.04, 100151.19, 100595.56, 101483.64]}};
 (function(){
   const svg = document.getElementById('chart'), tip = document.getElementById('tip');
@@ -277,14 +303,17 @@ const DATA = {"dates": ["2026-08-04", "2026-08-05", "2026-08-06", "2026-08-07", 
   function draw(){
     const keys = Object.keys(state).filter(k => state[k]);
     const all = keys.flatMap(k => DATA.series[k]);
-    const lo = Math.min(...all, 100000) - 300, hi = Math.max(...all, 100000) + 300;
+    const rawLo = Math.min(...all, 100000) - 300, rawHi = Math.max(...all, 100000) + 300;
+    const niceStep = r => { const e = Math.pow(10, Math.floor(Math.log10(r / 5))); const f = r / 5 / e;
+      return e * (f >= 5 ? 5 : f >= 2 ? 2 : 1); };
+    const step = niceStep(rawHi - rawLo);
+    const lo = Math.floor(rawLo / step) * step, hi = Math.ceil(rawHi / step) * step;
     const n = DATA.dates.length;
     const x = i => L + (W - L - R) * i / (n - 1);
     const y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
     let s = '';
-    const ticks = 5;
-    for (let t = 0; t <= ticks; t++){
-      const v = lo + (hi - lo) * t / ticks, yy = y(v);
+    for (let v = lo; v <= hi + 1e-6; v += step){
+      const yy = y(v);
       s += `<line x1="${L}" x2="${W - R}" y1="${yy}" y2="${yy}" stroke="var(--hair)" stroke-width="1"/>`;
       s += `<text x="${L - 8}" y="${yy + 4}" font-size="11" text-anchor="end" fill="var(--muted-2)" font-family="var(--font)">${money(v)}</text>`;
     }

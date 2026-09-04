@@ -25,22 +25,26 @@ from src.agents.vampire import (
 
 
 def _agent(quotes, configured=0.02):
-    """quotes: list of (bid, ask) served in order, last one repeating."""
+    """quotes: list of (bid, ask). Since 2026-09-04 the trigger is derived from
+    a WINDOW of the book (MarketDataService.recent_spread) rather than five
+    latest-quote polls, so the fixture serves the same book as a distribution.
+    The assertions below are unchanged on purpose: the behaviour contract has
+    to survive the change of mechanism."""
     a = VampireAgent.__new__(VampireAgent)
     eng = MagicMock()
     eng.cfg = MagicMock()
     eng.cfg.tick_threshold = configured
     a._engines = {"HOOD": eng}
     a._data = MagicMock()
-    seq = list(quotes)
-
-    def _q(_sym):
-        bid, ask = seq.pop(0) if len(seq) > 1 else seq[0]
-        q = MagicMock()
-        q.bid, q.ask = bid, ask
-        return q
-
-    a._data.get_latest_quote.side_effect = _q
+    spreads = sorted(ask - bid for bid, ask in quotes)
+    mids = sorted((ask + bid) / 2 for bid, ask in quotes)
+    a._data.recent_spread.return_value = {
+        "n": 5000,
+        "median": spreads[len(spreads) // 2],
+        "p90": spreads[-1],
+        "price": mids[len(mids) // 2],
+        "window_minutes": 20,
+    }
     return a, eng
 
 
@@ -61,10 +65,12 @@ class TestWideQuotesDoNotSetTheTrigger:
         a._apply_spread_thresholds()
         assert eng.cfg.tick_threshold < 1.0
 
-    def test_a_single_wide_read_is_discarded_not_the_whole_sample(self):
-        """Four good reads and one blowout: use the four."""
-        a, eng = _agent([(104.88, 104.92), (104.88, 104.92), (103.0, 106.87),
-                         (104.88, 104.92), (104.88, 104.92)])
+    def test_one_wide_quote_in_the_window_does_not_move_the_trigger(self):
+        """Was: median-of-5 discards one wide read. Now the median is taken over
+        thousands of quotes, so a single wide print cannot move it at all -- a
+        strictly stronger version of the same guarantee."""
+        tight = [(104.88, 104.92)] * 9
+        a, eng = _agent(tight + [(103.0, 106.87)])
         a._apply_spread_thresholds()
         assert eng.cfg.tick_threshold == round(0.04 * SPREAD_MULTIPLE, 4)
 

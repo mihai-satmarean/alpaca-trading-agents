@@ -349,3 +349,16 @@ risk:
   max_single_trade_pct: 0.05
   min_cash_reserve: 5000.0
   circuit_breaker_cooldown_minutes: 30
+
+# Tradier port of the Vampire (2026-09-04). The strategy, its regime gate and
+# its risk logic are the Alpaca build unchanged; only the broker and the quote
+# source are swapped. Run it with scripts/run_vampire_tradier.py, which
+# defaults to the SANDBOX paper account and refuses production without an
+# explicit --i-understand-this-is-real.
+tradier_vampire:
+  sandbox: true
+  symbols: [QQQ, TQQQ]
+  poll_seconds: 1.0        # Tradier has no streaming scope on this token
+  max_notional: 2500.0     # per symbol
+  max_daily_loss: 50.0     # per symbol
+  report_minutes: 15       # ntfy cadence, same topic as the Alpaca engine

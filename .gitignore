@@ -15,3 +15,6 @@ venv/
 .claude/settings.dell4.json
 
 logs/
+
+# macOS
+.DS_Store

@@ -1,0 +1,38 @@
+services:
+  trading-agent:
+    build: .
+    container_name: alpaca-agent
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs
+      - ./config:/app/config:ro
+    network_mode: host
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+  dashboard:
+    build: .
+    container_name: alpaca-dashboard
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - ./logs:/app/logs:ro
+      - ./config:/app/config:ro
+    network_mode: host
+    command: ["python", "-m", "streamlit", "run", "dashboard/app.py",
+              "--server.port=8501", "--server.address=0.0.0.0",
+              "--server.headless=true"]
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"

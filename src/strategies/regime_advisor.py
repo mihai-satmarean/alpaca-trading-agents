@@ -39,6 +39,40 @@ log = logging.getLogger(__name__)
 
 REGIMES = ("chop", "trend_up", "trend_down", "news")
 TRADEABLE_REGIMES = frozenset({"chop"})
+
+# A long-only book has a different relationship to a trend than a two-sided
+# one. For a bi-directional scalper any trend runs over mean reversion in
+# whichever direction it goes, so "chop" alone is right. But where borrow is
+# unavailable the engine can only buy dips, and trend_up is then the regime it
+# most wants: the dip it buys gets bought back. Measured on TQQQ 2026-09-08,
+# the gate blocked four trend_up windows worth +0.44 of favourable drift,
+# including the largest move of the day, against two trend_down windows worth
+# -0.12 that it was right to sit out.
+#
+# Derived from the constraint rather than configured by hand, so that borrow
+# returning silently restores the stricter rule instead of leaving a stale
+# setting behind.
+LONG_ONLY_TRADEABLE_REGIMES = frozenset({"chop", "trend_up"})
+
+
+def regimes_for_direction(allow_short: bool) -> frozenset[str]:
+    """Which regimes may open a NEW lot, given what the venue permits."""
+    return TRADEABLE_REGIMES if allow_short else LONG_ONLY_TRADEABLE_REGIMES
+
+
+def normalize_regimes(names: Iterable[str] | None) -> frozenset[str]:
+    """Keep only regimes the classifier can actually emit.
+
+    A typo cannot widen the gate: an unknown name is dropped, and a set that
+    ends up empty simply never opens, which is the safe direction.
+    """
+    if not names:
+        return TRADEABLE_REGIMES
+    wanted = {str(n).strip().lower() for n in names}
+    keep = frozenset(w for w in wanted if w in REGIMES)
+    for bad in sorted(wanted - keep):
+        log.warning("ignoring unknown regime %r in tradeable set", bad)
+    return keep
 MIN_BARS = 10
 _ET = ZoneInfo("America/New_York")
 
@@ -235,10 +269,12 @@ class RegimeAdvisor:
         bars_needed: int = 30,
         ttl_seconds: int = 20 * 60,
         min_confidence: float = 0.0,
+        tradeable_regimes: Iterable[str] | None = None,
         journal: bool = True,
         clock: Callable[[], float] = time.time,
     ):
         self.model = model
+        self.tradeable_regimes = normalize_regimes(tradeable_regimes)
         self.window_seconds = float(window_seconds)
         self.bars_needed = int(bars_needed)
         self.ttl_seconds = int(ttl_seconds)
@@ -279,8 +315,15 @@ class RegimeAdvisor:
             self._refreshed_at[symbol] = self._clock()
         return verdict
 
-    def entry_allowed(self, symbol: str) -> bool:
-        """True only for a fresh, confident, tradeable verdict. Everything else is no."""
+    def entry_allowed(self, symbol: str,
+                      tradeable: Iterable[str] | None = None) -> bool:
+        """True only for a fresh, confident, tradeable verdict. Everything else is no.
+
+        `tradeable` overrides the advisor's default set for this call, which is
+        how one advisor serves symbols whose venues permit different things:
+        see regimes_for_direction.
+        """
+        allowed = self.tradeable_regimes if tradeable is None else normalize_regimes(tradeable)
         with self._lock:
             verdict = self._verdicts.get(symbol)
         if verdict is None:
@@ -289,7 +332,7 @@ class RegimeAdvisor:
             return False
         if verdict.confidence < self.min_confidence:
             return False
-        return verdict.tradeable
+        return verdict.regime in allowed
 
     def status(self) -> dict[str, dict]:
         with self._lock:

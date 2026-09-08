@@ -180,6 +180,13 @@ vampire:
     bars: 30
     ttl_minutes: 20
     min_confidence: 0.0
+    # Which regimes may open a NEW lot. Defaults to [chop], which is correct
+    # for a two-sided scalper: any trend runs over mean reversion whichever
+    # way it goes. A venue where the symbol cannot be shorted overrides this
+    # automatically (see regimes_for_direction) because a long-only book wants
+    # trend_up, the one regime where the dip it buys gets bought back. Set it
+    # here only to override that derivation deliberately.
+    tradeable_regimes: [chop]
 
   # Chosen by measurement on 2026-08-31, not by volatility. What a scalper needs
   # is movement LARGER than the spread it pays to capture it. Sampling 18 liquid

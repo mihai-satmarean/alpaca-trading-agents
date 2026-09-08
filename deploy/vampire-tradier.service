@@ -1,0 +1,32 @@
+[Unit]
+Description=Vampire scalper against Tradier (sandbox paper account)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/alpaca-agent
+EnvironmentFile=/opt/alpaca-agent/.env
+EnvironmentFile=/opt/alpaca-agent/.env.tradier
+Environment=TZ=America/New_York
+# --duration covers 09:30 to just past the 15:55 flatten. The runner asks
+# Tradier's own clock whether today is a trading day, so Labor Day and every
+# other holiday are handled by the venue rather than by OnCalendar.
+#
+# --preflight-wait exists because Tradier's sandbox order endpoint returned
+# HTTP 500 from its gateway all morning on 2026-09-08 while every read
+# endpoint stayed healthy. Standing down on that would forfeit the whole day
+# even if the venue recovers at 10am, so the runner waits up to two hours,
+# starts the moment an order preview is accepted, and otherwise stands down
+# with an alert having traded nothing.
+ExecStart=/opt/alpaca-agent/.venv/bin/python scripts/run_vampire_tradier.py \
+    --symbols QQQ,TQQQ --poll 1.0 --notional 2500 --max-loss 50 \
+    --report 30 --duration 395 --preflight-wait 120 --preflight-probe 60
+Restart=no
+StandardOutput=append:/opt/alpaca-agent/logs/vampire-tradier.log
+StandardError=append:/opt/alpaca-agent/logs/vampire-tradier.err
+
+[Install]
+WantedBy=multi-user.target

@@ -430,3 +430,82 @@ class TestMarketDataAdapter:
         bars = m.get_recent_minute_bars("QQQ", 90)
         assert len(bars) == 1
         assert format_bars(bars)[0].endswith("o=717.75 h=718.00 l=717.63 c=717.87 v=76765")
+
+
+class TestWaitForOrderEndpoint:
+    """A venue outage at the bell must not forfeit the whole session.
+
+    On 2026-09-08 Tradier's sandbox order endpoint returned HTTP 500 from the
+    Apigee gateway on every order class while every read endpoint stayed
+    healthy and the identical request returned 200 on production. Aborting
+    the session on that would idle the strategy all day even if the venue
+    recovers at 10am, so the runner waits.
+    """
+
+    def _harness(self, results, budget, probe=60):
+        from scripts.run_vampire_tradier import wait_for_order_endpoint
+        seq = list(results)
+        calls = {"probes": 0, "slept": 0.0}
+        t = {"now": 0.0}
+
+        # A mutant that breaks the loop's exit condition must fail loudly here
+        # rather than hang the suite, so probing is hard-capped well above any
+        # budget these tests use.
+        def prober():
+            calls["probes"] += 1
+            if calls["probes"] > 500:
+                raise AssertionError("wait_for_order_endpoint did not terminate")
+            return seq.pop(0) if seq else (False, "still down")
+
+        def sleeper(sec):
+            calls["slept"] += sec
+            t["now"] += sec
+
+        alerts = []
+        healthy, detail, waited = wait_for_order_endpoint(
+            client=None, budget_seconds=budget, probe_seconds=probe,
+            probe=prober, sleep=sleeper, clock=lambda: t["now"],
+            alert=lambda stage, d, w: alerts.append(stage))
+        return healthy, detail, waited, calls, alerts
+
+    def test_healthy_endpoint_starts_immediately_and_never_alerts(self):
+        healthy, _, waited, calls, alerts = self._harness(
+            [(True, "order endpoint healthy")], budget=3600)
+        assert healthy
+        assert waited == 0.0
+        assert calls["probes"] == 1
+        assert alerts == []
+
+    def test_recovery_midway_starts_the_session(self):
+        healthy, detail, waited, calls, alerts = self._harness(
+            [(False, "500"), (False, "500"), (True, "order endpoint healthy")],
+            budget=3600, probe=60)
+        assert healthy
+        assert detail == "order endpoint healthy"
+        assert waited == 120.0
+        assert alerts == ["waiting", "recovered"]
+
+    def test_permanent_outage_stands_down_without_trading(self):
+        healthy, _, waited, _, alerts = self._harness(
+            [(False, "500")] * 50, budget=300, probe=60)
+        assert not healthy
+        assert alerts == ["waiting", "gave-up"]
+        assert waited <= 300
+
+    def test_never_sleeps_past_the_budget(self):
+        _, _, _, calls, _ = self._harness(
+            [(False, "500")] * 50, budget=300, probe=60)
+        assert calls["slept"] <= 300
+
+    def test_alerts_once_per_transition_not_once_per_probe(self):
+        _, _, _, calls, alerts = self._harness(
+            [(False, "500")] * 50, budget=600, probe=60)
+        assert calls["probes"] > 3
+        assert alerts.count("waiting") == 1
+
+    def test_zero_budget_probes_once_and_gives_up(self):
+        healthy, _, _, calls, _ = self._harness(
+            [(False, "500")] * 5, budget=0, probe=60)
+        assert not healthy
+        assert calls["probes"] == 1
+        assert calls["slept"] == 0.0

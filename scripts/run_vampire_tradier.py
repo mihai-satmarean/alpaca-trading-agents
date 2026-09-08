@@ -42,7 +42,8 @@ from src.core.config import load_config              # noqa: E402
 from src.core.notify import notify                   # noqa: E402
 from src.core.tradier_client import TradierClient     # noqa: E402
 from src.core.tradier_market_data import TradierMarketData  # noqa: E402
-from src.strategies.regime_advisor import RegimeAdvisor     # noqa: E402
+from src.strategies.regime_advisor import (                  # noqa: E402
+    RegimeAdvisor, regimes_for_direction)
 from src.strategies.vampire_engine import VampireConfig, VampireEngine  # noqa: E402
 
 ET = ZoneInfo("America/New_York")
@@ -147,6 +148,7 @@ def build(args):
             bars_needed=int(adv_cfg.get("bars", 30)),
             ttl_seconds=int(adv_cfg.get("ttl_minutes", 20)) * 60,
             min_confidence=float(adv_cfg.get("min_confidence", 0.0)),
+            tradeable_regimes=adv_cfg.get("tradeable_regimes"),
         )
 
     symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
@@ -158,7 +160,11 @@ def build(args):
         c.max_notional = args.notional
         c.max_daily_loss = args.max_loss
         if advisor is not None:
-            c.entry_gate = (lambda s=sym: advisor.entry_allowed(s))
+            # allow_short is read at CALL time, not here: borrow is resolved
+            # after build(), and if it ever comes back the gate tightens again
+            # on its own rather than leaving a stale widened setting behind.
+            c.entry_gate = (lambda cfg=c: advisor.entry_allowed(
+                cfg.symbol, tradeable=regimes_for_direction(cfg.allow_short)))
         engines[sym] = VampireEngine(client, data, tracker, c)
     return cfg, client, data, tracker, advisor, engines
 
@@ -239,7 +245,9 @@ async def main_async(args):
                f"No borrow at Tradier for: {', '.join(long_only)}.\n"
                f"Those symbols buy dips and sell them back only; the short leg "
                f"is disabled rather than rejected once per tick. "
-               f"Bi-directional: {', '.join(s for s in engines if s not in long_only) or 'none'}.",
+               f"Bi-directional: {', '.join(s for s in engines if s not in long_only) or 'none'}.\n"
+               f"Regime gate on those symbols widens to {sorted(regimes_for_direction(False))}, "
+               f"since a long-only book wants the up-trend it can only buy into.",
                severity="default")
 
     for engine in engines.values():

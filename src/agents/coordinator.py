@@ -68,6 +68,7 @@ class Coordinator:
             bars_needed=int(adv.get("bars", 30)),
             ttl_seconds=int(adv.get("ttl_minutes", 20)) * 60,
             min_confidence=float(adv.get("min_confidence", 0.0)),
+            tradeable_regimes=adv.get("tradeable_regimes"),
         ) if adv else None
         self._vampire_agent = VampireAgent(
             self._client,

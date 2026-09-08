@@ -1,4 +1,10 @@
 .env
+# Every per-venue variant too. The Tradier build reads .env.tradier, which
+# carries a live broker token; the bare ".env" rule did not cover it, and the
+# deploy pattern encourages creating one locally. Ignore the whole family and
+# re-admit only the committed template.
+.env.*
+!.env.example
 __pycache__/
 *.pyc
 *.pyo
@@ -15,3 +21,6 @@ venv/
 .claude/settings.dell4.json
 
 logs/
+
+# macOS
+.DS_Store

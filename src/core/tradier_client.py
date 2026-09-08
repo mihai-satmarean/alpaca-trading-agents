@@ -229,6 +229,33 @@ class TradierClient:
 
     # ------------------------------------------------------------- orders
 
+    def is_shortable(self, symbol: str, qty: int = 1) -> bool:
+        """Ask the broker whether it will short this symbol, placing nothing.
+
+        Tradier rejects every sell_short on TQQQ with "This symbol is not
+        available for short sales", on production as well as sandbox, so this
+        is a borrow fact rather than a paper-account artifact. Resolving it up
+        front with a preview turns one reject per tick into one request per
+        session.
+
+        A preview that cannot be read answers False: an unknown borrow is not
+        a licence to fire orders that may reject all day.
+        """
+        try:
+            r = self._request("POST", f"/accounts/{self._account}/orders", {
+                "class": "equity", "symbol": symbol, "side": "sell_short",
+                "quantity": str(int(qty)), "type": "market",
+                "duration": "day", "preview": "true"})
+        except Exception:
+            return False
+        order = (r or {}).get("order") or {}
+        if str(order.get("status", "")).lower() == "ok":
+            return True
+        # A standing long blocks the preview for a reason unrelated to borrow,
+        # so it says nothing about shortability either way; treat it as unknown
+        # and therefore False, and let the next session resolve it from flat.
+        return False
+
     def market_order(self, symbol: str, qty: float, side, time_in_force=None):
         """Submit a market order, choosing the Tradier side from the live book.
 

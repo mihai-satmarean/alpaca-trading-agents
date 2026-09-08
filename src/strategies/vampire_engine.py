@@ -76,6 +76,14 @@ class VampireConfig:
     # A gate that raises answers "no": every failure mode of a gate is cheap in
     # the direction of not trading and expensive in the other.
     entry_gate: Callable[[], bool] | None = None
+    # Some venues have no borrow for some symbols: Tradier rejects every
+    # sell_short on TQQQ, on production as well as sandbox, with "This symbol
+    # is not available for short sales." Attempting anyway costs a reject per
+    # tick and teaches the engine nothing, so shortability is resolved once at
+    # startup and the engine runs long-only on the symbols that lack it. This
+    # guards short ENTRY only: covering an existing short is always allowed,
+    # because a flag must never be able to trap an open position.
+    allow_short: bool = True
 
 
 class VampireEngine:
@@ -367,7 +375,8 @@ class VampireEngine:
             elif abs(self._net_position) < self.cfg.max_position:
                 room = self.cfg.max_position - abs(self._net_position)
                 want = min(self.cfg.position_size, room)
-                if want < 1 or self._would_breach_notional(want, current_price) \
+                if want < 1 or not self.cfg.allow_short \
+                        or self._would_breach_notional(want, current_price) \
                         or not self._entry_allowed():
                     want = 0
                 qty = self._submit(want, current_price, OrderSide.SELL) if want else 0

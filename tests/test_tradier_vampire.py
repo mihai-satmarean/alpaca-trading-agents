@@ -509,3 +509,81 @@ class TestWaitForOrderEndpoint:
         assert not healthy
         assert calls["probes"] == 1
         assert calls["slept"] == 0.0
+
+
+class TestNoBorrowIsResolvedBeforeTicking:
+    """Tradier has no borrow for TQQQ, on production as well as sandbox.
+
+    Verified 2026-09-08: a sell_short preview on TQQQ returns "This symbol is
+    not available for short sales" against the live production account, while
+    QQQ, SPY and AAPL preview ok. Four live sell_short orders were rejected in
+    under a second before this guard existed.
+    """
+
+    def _client(self, order_status=None, raises=False):
+        c = TradierClient.__new__(TradierClient)
+        c._account = "VA1"
+
+        def _req(method, path, params=None):
+            if raises:
+                raise TradierError("boom")
+            return {"order": {"status": order_status}}
+
+        c._request = _req
+        return c
+
+    def test_shortable_symbol_previews_ok(self):
+        assert self._client(order_status="ok").is_shortable("QQQ") is True
+
+    def test_unshortable_symbol_is_refused(self):
+        assert self._client(order_status="rejected").is_shortable("TQQQ") is False
+
+    def test_unreadable_preview_answers_no_not_yes(self):
+        # An unknown borrow must not licence a day of rejects.
+        assert self._client(raises=True).is_shortable("TQQQ") is False
+
+    def test_probe_places_nothing(self):
+        sent = {}
+
+        c = TradierClient.__new__(TradierClient)
+        c._account = "VA1"
+
+        def _req(method, path, params=None):
+            sent.update(params or {})
+            return {"order": {"status": "ok"}}
+
+        c._request = _req
+        c.is_shortable("QQQ")
+        assert sent.get("preview") == "true"
+        assert sent.get("side") == "sell_short"
+
+
+class TestLongOnlyEngine:
+    """allow_short must gate entry only, never trap an open short."""
+
+    def _engine(self, allow_short, net):
+        from src.strategies.vampire_engine import VampireConfig
+        cfg = VampireConfig(symbol="TQQQ", allow_short=allow_short)
+        return cfg, net
+
+    def test_default_is_bidirectional(self):
+        from src.strategies.vampire_engine import VampireConfig
+        assert VampireConfig(symbol="QQQ").allow_short is True
+
+    def test_flag_is_settable_per_symbol(self):
+        from src.strategies.vampire_engine import VampireConfig
+        a = VampireConfig(symbol="TQQQ")
+        b = VampireConfig(symbol="QQQ")
+        a.allow_short = False
+        assert a.allow_short is False and b.allow_short is True
+
+    def test_guard_sits_on_entry_and_not_on_cover(self):
+        # The cover branch (net_position < 0 -> BUY) must contain no reference
+        # to allow_short, or a flipped flag could strand an open short.
+        import inspect
+        from src.strategies import vampire_engine
+        src = inspect.getsource(vampire_engine.VampireEngine)
+        assert src.count("allow_short") == 1, \
+            "allow_short must appear exactly once, on the short-entry path"
+        cover = src[src.index('"buy_to_cover"') - 700:src.index('"buy_to_cover"')]
+        assert "allow_short" not in cover

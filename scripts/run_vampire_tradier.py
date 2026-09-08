@@ -225,6 +225,23 @@ async def main_async(args):
         return
     log.info("preflight: %s", detail)
 
+    # Resolve borrow once, from flat, before any tick can fire a short. TQQQ is
+    # not shortable at Tradier at all, so the alternative is a reject per tick.
+    long_only = []
+    for sym, engine in engines.items():
+        if int(client.net_position(sym)) == 0 and not client.is_shortable(sym):
+            engine.cfg.allow_short = False
+            long_only.append(sym)
+    if long_only:
+        log.warning("long-only this session (no borrow at Tradier): %s",
+                    ", ".join(long_only))
+        notify("Vampire/Tradier running long-only on some symbols",
+               f"No borrow at Tradier for: {', '.join(long_only)}.\n"
+               f"Those symbols buy dips and sell them back only; the short leg "
+               f"is disabled rather than rejected once per tick. "
+               f"Bi-directional: {', '.join(s for s in engines if s not in long_only) or 'none'}.",
+               severity="default")
+
     for engine in engines.values():
         engine.reconcile(int(client.net_position(engine.cfg.symbol)), None)
 

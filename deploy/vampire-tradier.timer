@@ -1,0 +1,10 @@
+[Unit]
+Description=Start the Tradier Vampire at the opening bell on weekdays
+
+[Timer]
+OnCalendar=Mon-Fri 09:29 America/New_York
+Persistent=false
+Unit=vampire-tradier.service
+
+[Install]
+WantedBy=timers.target

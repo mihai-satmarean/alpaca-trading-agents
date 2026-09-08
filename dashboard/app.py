@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.core.alpaca_client import AlpacaClient
+from dashboard.read_cache import ReadThroughCache
 from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.core.options_chain import OptionsChain
@@ -44,6 +45,10 @@ st.set_page_config(
 )
 
 ET = ZoneInfo("America/New_York")
+
+# Just under the auto-refresh interval, so a render costs one
+# set of broker reads no matter how many people are watching.
+DASHBOARD_READ_TTL = float(os.getenv("DASHBOARD_READ_TTL", "12"))
 
 
 @st.cache_resource
@@ -93,8 +98,15 @@ def require_token() -> None:
     st.stop()
 
 
+@st.cache_resource
 def get_client():
-    return AlpacaClient()
+    """One client, one read cache, shared by every viewer.
+
+    Undecorated this built a fresh client per rerun per session, so nothing
+    was shared and the Alpaca read rate scaled with the number of people
+    watching. See dashboard/read_cache.py for the incident this fixes.
+    """
+    return ReadThroughCache(AlpacaClient(), ttl=DASHBOARD_READ_TTL)
 
 
 @st.cache_resource
@@ -858,6 +870,33 @@ def render_sixfold_scanner():
             st.code(report, language="text")
 
 
+def panel(label: str):
+    """Contain a panel's failure to that panel.
+
+    A rate-limit error inside one section used to propagate out of main() and
+    Streamlit replaced the entire page with a traceback, so a transient broker
+    problem in the sleeves panel took down the equity hero, the positions
+    table and every tab with it. A dashboard is a monitoring surface: the half
+    that still works is worth more than a stack trace.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _guard():
+        try:
+            yield
+        except Exception as exc:                      # noqa: BLE001 - display surface
+            text = str(exc)
+            if "rate limit" in text.lower() or "42910000" in text:
+                st.warning(
+                    f"{label} is rate-limited by Alpaca right now. "
+                    f"It will fill in on the next refresh."
+                )
+            else:
+                st.warning(f"{label} could not be drawn: {type(exc).__name__}: {text[:200]}")
+    return _guard()
+
+
 def main():
     require_token()
     inject_theme()
@@ -871,8 +910,10 @@ def main():
         st.info("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
         return
 
-    render_hero(client, tracker)
-    render_sleeves(allocator)
+    with panel("The equity header"):
+        render_hero(client, tracker)
+    with panel("The sleeve allocation"):
+        render_sleeves(allocator)
     st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
     from src.core.notify import read_journal
@@ -886,11 +927,13 @@ def main():
     ])
 
     with tab_council:
-        render_council(client, allocator, tracker)
+        with panel("The AI council"):
+            render_council(client, allocator, tracker)
 
     with tab_overview:
         st.subheader("Positions")
-        render_positions(client)
+        with panel("The positions table"):
+            render_positions(client)
         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
         col_left, col_right = st.columns([3, 2])
 

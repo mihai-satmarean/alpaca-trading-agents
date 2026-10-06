@@ -1113,9 +1113,8 @@ def main():
         with panel("Drawdown"):
             render_drawdown_chart(client)
 
-    with panel("The sleeve allocation"):
+    with st.expander("Capital allocation", expanded=False):
         render_sleeves(allocator)
-    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
     from src.core.notify import read_journal
     unread = _unread_notification_count(read_journal(limit=200), st.session_state)

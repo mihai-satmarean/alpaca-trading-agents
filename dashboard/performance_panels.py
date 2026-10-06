@@ -144,10 +144,10 @@ def render_daily_pnl_bars(client):
     best = max(daily_pnl) if daily_pnl else 0
     worst = min(daily_pnl) if daily_pnl else 0
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Positive days", f"{wins}")
-    c2.metric("Negative days", f"{losses}")
-    c3.metric("Strongest day", f"${best:+,.0f}")
-    c4.metric("Weakest day", f"${worst:+,.0f}")
+    c1.metric("Pos. days", f"{wins}")
+    c2.metric("Neg. days", f"{losses}")
+    c3.metric("Best day", f"${best:+,.0f}")
+    c4.metric("Worst day", f"${worst:+,.0f}")
 
 
 def render_drawdown_chart(client):

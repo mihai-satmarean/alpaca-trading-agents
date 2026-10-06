@@ -1,9 +1,9 @@
 allocation:
-  sixfold_pct: 0.1
-  options_pct: 0.1
-  vampire_pct: 0.1
-  pendulum_pct: 0.1
-  reserve_pct: 0.1
+  sixfold_pct: 0.20
+  options_pct: 0.15
+  vampire_pct: 0.20
+  pendulum_pct: 0.15
+  reserve_pct: 0.15
 pendulum:
   symbol: TLT
   entry_z: -2.0
@@ -111,13 +111,17 @@ adapters:
     source: competitors/repos/SamsonDoski__alpaca-trading-assistant
     temperature: 0.5
     max_daily_decay: 0.04
+    max_positions: 10
+    max_per_group: 6
   shouldai:
     enabled: true
     capital_pct: 0.125
     dry_run: false
     config_variant: default
     source: competitors/repos/nabielnovelkhubran__Should-AI-Buy
-    temperature: 0.5
+    temperature: 0.7
+    max_open_positions: 10
+    min_opportunity_score: 40
   neural_trader:
     enabled: false
     capital_pct: 0.0

@@ -33,7 +33,7 @@ from src.strategies.sixfold_executor import SixfoldExecutor
 
 log = logging.getLogger(__name__)
 
-REBALANCE_INTERVAL = 600  # 10 minutes
+REBALANCE_INTERVAL = 120  # 2 minutes -- aggressive for hackathon
 
 
 class Coordinator:

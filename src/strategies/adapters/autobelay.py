@@ -203,7 +203,8 @@ def _snap_to_real_contract(client, symbol: str) -> str | None:
     """Find the nearest real option contract matching an LLM-generated symbol.
     
     The LLM often generates OCC symbols with wrong dates or non-existent strikes.
-    This queries the Alpaca option contracts API for the closest match.
+    This queries the Alpaca option contracts API for the closest match,
+    preferring contracts near the LLM's intended expiry date.
     """
     m = re.match(r'^([A-Z]{1,6})(\d{6})([CP])(\d{8})$', symbol)
     if not m:
@@ -218,25 +219,45 @@ def _snap_to_real_contract(client, symbol: str) -> str | None:
     today = date.today()
     option_type = "call" if cp == "C" else "put"
     
+    # Parse LLM's intended expiry to use as target DTE
+    try:
+        llm_year = 2000 + int(date_str[:2])
+        llm_month = int(date_str[2:4])
+        llm_day = int(date_str[4:6])
+        llm_expiry = date(llm_year, llm_month, llm_day)
+        target_dte = max((llm_expiry - today).days, 7)
+    except (ValueError, OverflowError):
+        target_dte = 30  # fallback: ~1 month out
+    
+    # Search window centered on LLM's intended DTE (min 7, max 90)
+    dte_min = max(2, target_dte - 15)
+    dte_max = min(90, target_dte + 15)
+    
     try:
         req = GetOptionContractsRequest(
             underlying_symbols=[root],
-            expiration_date_gte=str(today + timedelta(days=2)),
-            expiration_date_lte=str(today + timedelta(days=45)),
+            expiration_date_gte=str(today + timedelta(days=dte_min)),
+            expiration_date_lte=str(today + timedelta(days=dte_max)),
             type=option_type,
-            strike_price_gte=str(int(strike_val * 0.98)),
-            strike_price_lte=str(int(strike_val * 1.02)),
-            limit=10,
+            strike_price_gte=str(int(strike_val * 0.95)),
+            strike_price_lte=str(int(strike_val * 1.05)),
+            limit=20,
         )
         result = client.trading.get_option_contracts(req)
         contracts = result.option_contracts if hasattr(result, "option_contracts") else []
         if not contracts:
-            log.warning("autobelay: no real contracts near %s", symbol)
+            log.warning("autobelay: no real contracts near %s (DTE %d-%d, strike %.0f +/-5%%)",
+                        symbol, dte_min, dte_max, strike_val)
             return None
-        # Pick the one closest to the target strike
-        best = min(contracts, key=lambda c: abs(float(c.strike_price) - strike_val))
-        log.info("autobelay: snapped %s -> %s (strike=%.0f, exp=%s)", 
-                 symbol, best.symbol, float(best.strike_price), best.expiration_date)
+        # Score: weighted combo of strike distance + DTE distance from LLM intent
+        def score(c):
+            strike_diff = abs(float(c.strike_price) - strike_val) / max(strike_val, 1)
+            exp = date.fromisoformat(str(c.expiration_date))
+            dte_diff = abs((exp - today).days - target_dte) / max(target_dte, 1)
+            return strike_diff + 0.5 * dte_diff
+        best = min(contracts, key=score)
+        log.info("autobelay: snapped %s -> %s (strike=%.0f, exp=%s, target_dte=%d)", 
+                 symbol, best.symbol, float(best.strike_price), best.expiration_date, target_dte)
         return str(best.symbol)
     except Exception as exc:
         log.warning("autobelay: contract lookup failed for %s: %s", symbol, exc)

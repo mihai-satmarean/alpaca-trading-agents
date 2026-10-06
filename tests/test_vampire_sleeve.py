@@ -185,6 +185,9 @@ class TestSpreadAwareThresholds:
         client, data, tracker, breaker, allocator = (MagicMock() for _ in range(5))
         q = MagicMock(); q.bid = price - spread / 2; q.ask = price + spread / 2; q.mid = price
         data.get_latest_quote.return_value = q
+        # The trigger is derived from a window of the book since 2026-09-04.
+        data.recent_spread.return_value = {"n": 5000, "median": spread, "p90": spread * 2,
+                                           "price": price, "window_minutes": 20}
         allocator.get_budget.return_value = MagicMock(vampire_budget=5_000.0)
         tracker.get_snapshot.return_value = MagicMock(positions={})
         return VampireAgent(client, data, tracker, breaker, allocator, symbols=["SPY"])
@@ -207,7 +210,7 @@ class TestSpreadAwareThresholds:
 
     def test_a_missing_quote_keeps_the_configured_threshold(self):
         a = self._agent(spread=0.06)
-        a._data.get_latest_quote.return_value = None
+        a._data.recent_spread.return_value = None
         before = a._engines["SPY"].cfg.tick_threshold
         a._apply_spread_thresholds()
         assert a._engines["SPY"].cfg.tick_threshold == before

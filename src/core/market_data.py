@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import asyncio
 from collections import deque
 from dataclasses import dataclass, field
@@ -10,11 +12,13 @@ from typing import Callable
 
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.live import StockDataStream
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest, StockQuotesRequest
 from alpaca.data.enums import DataFeed
 from alpaca.data.timeframe import TimeFrame
 
 from src.core.alpaca_client import AlpacaClient
+
+log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -117,6 +121,57 @@ class MarketDataService:
         except (KeyError, TypeError):
             bars = (getattr(result, "data", None) or {}).get(symbol, [])
         return list(bars)
+
+    def recent_spread(self, symbol: str, minutes: int = 20,
+                      max_age_minutes: int = 24 * 60) -> dict | None:
+        """Median quoted spread over a real window of the book, or None.
+
+        Five REST reads a fifth of a second apart is one second of evidence,
+        and the strategy pinned that second to the worst moment of the day:
+        the agent starts within 30s of the opening bell and calibrated on the
+        auction book. QQQ's IEX median spread on 2026-09-03 was $0.740 in the
+        first minute, $0.110 by 09:35 and $0.050 by 11:10, so the trigger it
+        froze for the session was 15x the width the book actually traded at.
+
+        This reads a window of historical IEX quotes instead -- the same feed
+        the engine's own stream uses -- and falls back to the previous session
+        when the window is empty, which is exactly the case at the open. It
+        returns the distribution, not just a number, so the caller can refuse
+        a sample it should not trust.
+        """
+        end = datetime.now(timezone.utc)
+        for lookback in (minutes, minutes * 6, max_age_minutes):
+            try:
+                req = StockQuotesRequest(
+                    symbol_or_symbols=symbol,
+                    start=end - timedelta(minutes=lookback),
+                    end=end,
+                    feed=DataFeed.IEX,
+                )
+                quotes = self._data.get_stock_quotes(req)[symbol]
+            except Exception:
+                log.warning("%s: spread window read failed", symbol, exc_info=True)
+                return None
+            spreads, mids = [], []
+            for q in quotes:
+                try:
+                    bid, ask = float(q.bid_price), float(q.ask_price)
+                except (TypeError, ValueError):
+                    continue
+                if bid > 0 and ask > bid:
+                    spreads.append(ask - bid)
+                    mids.append((bid + ask) / 2)
+            if len(spreads) >= 200:
+                spreads.sort()
+                n = len(spreads)
+                return {
+                    "n": n,
+                    "median": spreads[n // 2],
+                    "p90": spreads[min(n - 1, int(n * 0.9))],
+                    "price": sorted(mids)[len(mids) // 2],
+                    "window_minutes": lookback,
+                }
+        return None
 
     def get_vwap(self, symbol: str, window_seconds: int = 5) -> float | None:
         tracker = self._vwaps.get(symbol)

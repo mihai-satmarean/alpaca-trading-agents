@@ -27,13 +27,14 @@ from src.core.market_data import MarketDataService
 from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
+from src.strategies.adapters.registry import load_adapters
 from src.strategies.pendulum import PendulumParams
 from src.strategies.sixfold_exits import ExitCfg as SixfoldExitCfg
 from src.strategies.sixfold_executor import SixfoldExecutor
 
 log = logging.getLogger(__name__)
 
-REBALANCE_INTERVAL = 600  # 10 minutes
+REBALANCE_INTERVAL = 120  # 2 minutes -- aggressive for hackathon
 
 
 class Coordinator:
@@ -136,6 +137,15 @@ class Coordinator:
                 reentry_lockout_days=cfg.sixfold_reentry_lockout_days,
             )
 
+        # Strategy adapters (competitor-derived algorithms)
+        self._adapters = load_adapters(
+            self._client, self._data, self._tracker, self._breaker, self._allocator,
+        )
+        if self._adapters:
+            log.info("Loaded %d strategy adapter(s): %s",
+                     len(self._adapters),
+                     ", ".join(a.name for a in self._adapters))
+
         self._running = False
         self._sixfold_thread: threading.Thread | None = None
 
@@ -171,6 +181,17 @@ class Coordinator:
                 "total_scored": len(self._sixfold_agent.scores),
             }
 
+        adapter_summary = {}
+        for adapter in self._adapters:
+            h = adapter.health_check()
+            adapter_summary[adapter.name] = {
+                "status": h.status.value,
+                "signals_today": h.signals_today,
+                "errors_today": h.errors_today,
+                "dry_run": adapter.is_dry_run,
+                "message": h.message,
+            }
+
         return {
             "timestamp": datetime.now().isoformat(),
             "equity": snapshot.equity,
@@ -192,6 +213,7 @@ class Coordinator:
             "vampire_status": self._vampire_agent.get_status(),
             "risk": risk_report,
             "sixfold": sixfold_summary,
+            "adapters": adapter_summary,
         }
 
     def start(self):
@@ -261,6 +283,25 @@ class Coordinator:
                     except Exception:
                         log.exception("PENDULUM cycle failed")
 
+                # Strategy adapters: evaluate -> execute for each enabled adapter
+                for adapter in self._adapters:
+                    try:
+                        health = adapter.health_check()
+                        if health.status.value == "unavailable":
+                            log.debug("Adapter %s: unavailable, skipping", adapter.name)
+                            continue
+                        log.info("Adapter %s: evaluating...", adapter.name)
+                        signals = adapter.evaluate()
+                        log.info("Adapter %s: evaluate returned %d signal(s)", adapter.name, len(signals) if signals else 0)
+                        if signals:
+                            results = adapter.execute(signals)
+                            submitted = sum(1 for r in results
+                                            if r.outcome.value in ("filled", "dry_run"))
+                            log.info("Adapter %s: %d signal(s), %d submitted",
+                                     adapter.name, len(signals), submitted)
+                    except Exception:
+                        log.exception("Adapter %s cycle failed", adapter.name)
+
                 if self._allocator.needs_rebalance():
                     log.info("Rebalancing allocations")
                     budget = self._allocator.get_budget()
@@ -291,6 +332,12 @@ class Coordinator:
         self._running = False
         self._sixfold_agent.stop()
         self._vampire_agent.stop_all()
+        for adapter in self._adapters:
+            try:
+                adapter.flatten()
+                log.info("Adapter %s: flattened", adapter.name)
+            except Exception:
+                log.exception("Adapter %s: flatten failed", adapter.name)
         self.cancel_intraday_orders()
         log.info("Shutdown complete")
 

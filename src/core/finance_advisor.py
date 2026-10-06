@@ -11,7 +11,7 @@ proceeds on the deterministic signal alone (no AI gate).
 Models:
   - dell4-finance  (Fin-R1 7B)     -- financial domain specialist
   - dell4-chat     (Qwen3.6-35B)   -- general reasoning, broad context
-  - dell4-qwen38   (Qwen3.8-27B)   -- strong general, multimodal capable
+  - dell2-heretic  (Qwen3.8-Flash-Next-heretic-2) -- strong reasoning, Dell2 via IB
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ except Exception:
 COUNCIL_MODELS = [
     ("dell4-finance", "Finance Specialist"),
     ("dell4-chat", "General Strategist"),
-    ("dell4-qwen38", "Risk Analyst"),
+    ("dell2-heretic", "Risk Analyst"),
 ]
 
 CONSENSUS_THRESHOLD = 2  # minimum agreeing advisors to pass
@@ -93,7 +93,7 @@ def _llm_call(model: str, system: str, user: str,
     #
     # The cluster is self-hosted with no per-token cost, so the budget was the
     # wrong thing to economize. Measured against the real endpoint at 4000:
-    # dell4-finance 2.0s, dell4-chat 12.5s, dell4-qwen38 34.5s, all returning
+    # dell4-finance 2.0s, dell4-chat 12.5s, dell2-heretic ~3s, all returning
     # real content with finish_reason "stop".
     if max_tokens is None:
         max_tokens = int(os.environ.get("COUNCIL_MAX_TOKENS", "4000"))
@@ -104,6 +104,10 @@ def _llm_call(model: str, system: str, user: str,
     # another.
     timeout = float(os.environ.get("COUNCIL_TIMEOUT", "60"))
 
+    # Disable reasoning-mode thinking for Qwen3.6/MiniMax models. The hidden
+    # reasoning_content is not used by any caller and costs 200+ tokens plus
+    # ~10s of latency per call. With thinking off, dell4-chat drops from 12.5s
+    # to ~2s on the same prompt and uses 8 tokens instead of 222.
     body = json.dumps({
         "model": model,
         "messages": [
@@ -112,6 +116,7 @@ def _llm_call(model: str, system: str, user: str,
         ],
         "max_tokens": max_tokens,
         "temperature": temperature,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }).encode()
 
     req = urllib.request.Request(
@@ -120,7 +125,8 @@ def _llm_call(model: str, system: str, user: str,
     )
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         payload = json.load(r)
-    return payload["choices"][0]["message"]["content"].strip()
+    content = payload["choices"][0]["message"].get("content")
+    return (content or "").strip()
 
 
 _APPROVE_NEGATIONS = ("NOT APPROVE", "N'T APPROVE", "CANNOT APPROVE",

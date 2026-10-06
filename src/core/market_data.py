@@ -97,6 +97,7 @@ class MarketDataService:
             timeframe=timeframe,
             start=start,
             end=end,
+            feed=DataFeed.IEX,
         )
         return self._data.get_stock_bars(req)
 

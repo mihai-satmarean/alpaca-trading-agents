@@ -35,9 +35,9 @@ models:
     context_window: 262144
 
   multimodal:
-    name: dell4-qwen38
-    description: "Qwen3.8-27B dense -- multimodal, 61.7% SWE-bench Pro, vision"
-    context_window: 131072
+    name: dell2-heretic
+    description: "Qwen3.8-Flash-Next-heretic-2 on Dell2 via IB -- replaces dell4-qwen38 (GPU2 down)"
+    context_window: 262144
 
   toolcall:
     name: dell4-toolcall

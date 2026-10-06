@@ -124,7 +124,7 @@ def _chat(system: str, user: str) -> str:
     # "length" - not an error, so nothing here ever raised. Confirmed live
     # against the real endpoint with the production prompt: at 700 tokens
     # every reasoning-capable model tested returned null; at 4000 all of
-    # them (dell4-chat 12.5s, dell4-finance 2.0s, dell4-qwen38 34.5s)
+    # them (dell4-chat 12.5s, dell4-finance 2.0s, dell2-heretic ~3s)
     # returned real content with finish_reason "stop". This cluster is
     # self-hosted with no per-token cost, so the budget was the wrong
     # thing to economize - NARRATOR_MAX_TOKENS is generous by default and
@@ -137,6 +137,7 @@ def _chat(system: str, user: str) -> str:
                      {"role": "user", "content": user}],
         "max_tokens": max_tokens,
         "temperature": 0.3,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": False}},
     }).encode()
 
     req = urllib.request.Request(
@@ -145,7 +146,7 @@ def _chat(system: str, user: str) -> str:
     )
     with urllib.request.urlopen(req, timeout=timeout, context=_SSL_CTX) as r:
         payload = json.load(r)
-    return payload["choices"][0]["message"]["content"]
+    return payload["choices"][0]["message"].get("content")
 
 
 def _run(system: str, user: str, what: str) -> str | None:

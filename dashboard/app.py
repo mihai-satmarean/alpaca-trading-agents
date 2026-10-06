@@ -102,7 +102,7 @@ def get_data():
     return MarketDataService(get_client())
 
 
-@st.cache_resource
+@st.cache_resource(ttl=30)
 def get_tracker():
     return PositionTracker(get_client())
 
@@ -235,10 +235,38 @@ def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
     budget = allocator.get_budget()
     cfg = load_config()
     scal = {x.upper() for x in cfg.vampire_symbols}
-    six_used = sum(abs(float(p.get("market_value", 0.0)))
-                   for sym, p in get_tracker().get_snapshot().positions.items()
-                   if len(sym) <= 6 and sym.upper() not in scal and sym.upper() != cfg.pendulum_symbol)
-    return [
+    snapshot = get_tracker().get_snapshot()
+    equity = snapshot.equity
+
+    # Build adapter attribution from trade journal
+    last_buyer: dict[str, str] = {}
+    tracker = get_tracker()
+    for t in tracker.trades:
+        if t.side in ("buy", "long"):
+            last_buyer[t.symbol] = t.strategy
+
+    # Compute per-adapter usage from current positions
+    adapter_used: dict[str, float] = {}
+    six_used = 0.0
+    for sym, p in snapshot.positions.items():
+        mv = abs(float(p.get("market_value", 0.0)))
+        strategy = last_buyer.get(sym)
+        if strategy and strategy in ("autobelay", "killswitch", "shouldai", "bull_spread"):
+            adapter_used[strategy] = adapter_used.get(strategy, 0.0) + mv
+        elif len(sym) <= 6 and sym.upper() not in scal and sym.upper() != cfg.pendulum_symbol:
+            six_used += mv
+
+    # Read adapter config directly from YAML
+    import yaml
+    from pathlib import Path
+    adapters_cfg = {}
+    yml_path = Path("config/strategies.yml")
+    if yml_path.exists():
+        with yml_path.open() as fh:
+            raw = yaml.safe_load(fh) or {}
+            adapters_cfg = raw.get("adapters", {})
+
+    rows = [
         dict(name="SixFold", target_pct=cfg.sixfold_pct, budget=budget.sixfold_budget, used=six_used, status="active"),
         dict(name="CSP", target_pct=cfg.options_pct, budget=budget.options_budget, used=budget.options_used, status="active"),
         dict(name="Pendulum", target_pct=cfg.pendulum_pct, budget=budget.pendulum_budget, used=budget.pendulum_used,
@@ -246,6 +274,24 @@ def _sleeve_rows(allocator: AllocationManager) -> list[dict]:
         dict(name="Vampire", target_pct=cfg.vampire_pct, budget=budget.vampire_budget, used=budget.vampire_used,
              status="retired" if cfg.vampire_pct == 0 else ("armed" if _vampire_paused(cfg) else "active")),
     ]
+
+    # Add adapter sleeves
+    for name in ("autobelay", "killswitch", "shouldai", "bull_spread"):
+        acfg = adapters_cfg.get(name, {})
+        cap_pct = float(acfg.get("capital_pct", 0.125))
+        enabled = acfg.get("enabled", False)
+        used = adapter_used.get(name, 0.0)
+        adapter_budget = equity * cap_pct
+        status = "active" if enabled and used > 0 else ("armed" if enabled else "retired")
+        rows.append(dict(
+            name=name.replace("_", " ").title(),
+            target_pct=cap_pct,
+            budget=adapter_budget,
+            used=used,
+            status=status,
+        ))
+
+    return rows
 
 
 def render_sleeves(allocator: AllocationManager):
@@ -388,11 +434,31 @@ def render_positions(client: AlpacaClient):
     cfg = load_config()
     scal = {x.upper() for x in cfg.vampire_symbols}
     from src.risk.allocation import parse_occ
+
+    # Build last-buyer map for adapter attribution
+    last_buyer: dict[str, str] = {}
+    try:
+        tracker = get_tracker()
+        if hasattr(tracker, "trades"):
+            for t in tracker.trades:
+                if t.side in ("buy", "long"):
+                    last_buyer[t.symbol] = t.strategy
+    except Exception:
+        pass
+
     rows = []
     for p in positions:
         sym = str(p.symbol).upper()
-        sleeve = ("CSP" if parse_occ(sym) else "Pendulum" if sym == cfg.pendulum_symbol
-                  else "Vampire" if sym in scal else "SixFold")
+        if parse_occ(sym):
+            sleeve = "CSP"
+        elif sym == cfg.pendulum_symbol:
+            sleeve = "Pendulum"
+        elif sym in scal:
+            sleeve = "Vampire"
+        elif sym in last_buyer:
+            sleeve = last_buyer[sym].title()
+        else:
+            sleeve = "SixFold"
         rows.append({"sleeve": sleeve, "symbol": p.symbol, "qty": float(p.qty),
                      "entry": float(p.avg_entry_price), "last": float(p.current_price),
                      "pl": float(p.unrealized_pl), "plpc": float(p.unrealized_plpc) * 100,
@@ -421,14 +487,31 @@ def render_orders(client: AlpacaClient):
 
 
 def render_strategy_pnl(tracker: PositionTracker):
-    strategies = {"csp": "Cash-Secured Puts", "covered_call": "Covered Calls", "vampire": "Vampire"}
+    strategies = {
+        "csp": "Cash-Secured Puts",
+        "covered_call": "Covered Calls",
+        "vampire": "Vampire",
+        "autobelay": "Autobelay",
+        "killswitch": "Killswitch",
+        "shouldai": "ShouldAI",
+        "bull_spread": "Bull Spread",
+        "sixfold": "SIXFOLD",
+        "pendulum": "Pendulum",
+    }
     data = []
     for key, label in strategies.items():
+        trades = tracker.strategy_trade_count(key)
+        if trades == 0:
+            continue
         data.append({
             "Strategy": label,
             "P&L": tracker.strategy_pnl(key),
-            "Trades": tracker.strategy_trade_count(key),
+            "Trades": trades,
         })
+
+    if not data:
+        st.info("No trades recorded yet this session")
+        return
 
     df = pd.DataFrame(data)
     colors = ["#3b82f6" if v >= 0 else "#ef4444" for v in df["P&L"]]
@@ -445,6 +528,68 @@ def render_strategy_pnl(tracker: PositionTracker):
         margin=dict(t=10, b=20, l=20, r=20),
     )
     st.plotly_chart(fig, use_container_width=True)
+
+    st.caption("Trade counts per strategy (this session)")
+    st.dataframe(df[["Strategy", "Trades"]], use_container_width=True, hide_index=True)
+
+
+def render_adapter_positions(client: AlpacaClient, tracker: PositionTracker):
+    """Show unrealized P&L attributed to each adapter based on trade journal.
+
+    Since multiple adapters can trade the same symbol, we attribute positions
+    to the adapter that last bought them.  This is an approximation but good
+    enough for the hackathon demo.
+    """
+    # Build last-buyer map from trade records
+    last_buyer: dict[str, str] = {}  # symbol -> strategy
+    for t in tracker.trades:
+        if t.side in ("buy", "long"):
+            last_buyer[t.symbol] = t.strategy
+
+    # Get current positions from broker
+    positions = client.get_positions()
+    if not positions:
+        return
+
+    adapter_pnl: dict[str, float] = {}
+    adapter_value: dict[str, float] = {}
+    adapter_positions_list: dict[str, list] = {}
+
+    for p in positions:
+        sym = str(p.symbol)
+        strategy = last_buyer.get(sym, "other")
+        pnl = float(p.unrealized_pl)
+        mv = float(p.market_value)
+
+        adapter_pnl[strategy] = adapter_pnl.get(strategy, 0.0) + pnl
+        adapter_value[strategy] = adapter_value.get(strategy, 0.0) + abs(mv)
+        if strategy not in adapter_positions_list:
+            adapter_positions_list[strategy] = []
+        adapter_positions_list[strategy].append({
+            "symbol": sym,
+            "qty": float(p.qty),
+            "pnl": pnl,
+            "value": mv,
+        })
+
+    if not adapter_pnl:
+        return
+
+    st.subheader("P&L by Adapter (unrealized)")
+    rows = []
+    for strategy in sorted(adapter_pnl.keys()):
+        pnl = adapter_pnl[strategy]
+        value = adapter_value[strategy]
+        n = len(adapter_positions_list[strategy])
+        pnl_pct = (pnl / value * 100) if value > 0 else 0
+        rows.append({
+            "Adapter": strategy.title(),
+            "Positions": n,
+            "Value": f"${value:,.0f}",
+            "Unrealized P&L": f"${pnl:+,.2f}",
+            "P&L %": f"{pnl_pct:+.1f}%",
+        })
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def render_trade_history(tracker: PositionTracker):
@@ -912,6 +1057,9 @@ def main():
 
             st.subheader("P&L by Strategy")
             render_strategy_pnl(tracker)
+
+            st.subheader("Adapter Attribution")
+            render_adapter_positions(client, tracker)
 
             st.subheader("Latest Notifications")
             render_recent_notifications()

@@ -66,6 +66,102 @@ DAMODARAN_SECTOR_MARGINS: dict[str, dict[str, float]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Tashi addendum, 2026-09-03: "Suspend the Buffett 40 rule if the company's
+# cash revenue is growing at 20% and it has never had negative net income."
+#
+# INTERPRETATION, stated because it decides what gets bought:
+#  - "the Buffett 40 rule" is the LENS ONE gross-margin >= 40% criterion. The
+#    methodology PDF has no P/E threshold anywhere in the Buffett lens; gross
+#    margin is its only 40% threshold ("Gross margin | 40% or higher | Pricing
+#    power"). The addendum says "40 P/E"; that reading does not exist in the
+#    framework, so it is taken as the gross-margin gate.
+#  - "suspend" REMOVES the criterion from the denominator (8 -> 7) rather than
+#    awarding its point. A suspended rule should be neutral, not a free pass;
+#    granting the point would raise scores for exactly the companies the rule
+#    was written to accommodate rather than reward.
+#  - It is a RELIEF VALVE: it fires only where the company would otherwise be
+#    PENALISED, i.e. gross margin below 40%. Measured on live data before this
+#    shipped on the Tradier side: applying it unconditionally LOWERED META
+#    (75.9 -> 75.1) and LLY (73.4 -> 72.2), because both clear 40% and
+#    suspension stripped a point they had earned. An addendum written to grant
+#    relief must never cut the score of a company that qualifies for it, so a
+#    passing margin keeps its point.
+#  - "never had negative net income" is bounded by what the filings report. A
+#    single profitable year is not evidence of "never", so a minimum history is
+#    required; and an unreported year is unknown, not profitable.
+# ---------------------------------------------------------------------------
+
+GROSS_MARGIN_SUSPENSION_GROWTH = 0.20
+GROSS_MARGIN_SUSPENSION_MIN_YEARS = 3
+
+
+@dataclass
+class SuspensionCheck:
+    """Whether the Tashi addendum suspends the gross-margin criterion."""
+    suspended: bool
+    reason: str
+    revenue_growth: float | None = None
+    profitable_years: int = 0
+
+
+def gross_margin_suspension(
+    data: FundamentalData,
+    growth_threshold: float = GROSS_MARGIN_SUSPENSION_GROWTH,
+    min_years_history: int = GROSS_MARGIN_SUSPENSION_MIN_YEARS,
+) -> SuspensionCheck:
+    """Pure: does the addendum suspend the gross-margin gate for this company?"""
+    inc = data.income_statements or []
+
+    cur = inc[0].revenue if inc and inc[0].is_reported("revenue") else None
+    prev = inc[1].revenue if len(inc) > 1 and inc[1].is_reported("revenue") else None
+    if cur is None or prev is None or prev <= 0:
+        return SuspensionCheck(False, "revenue growth not computable")
+    growth = (cur - prev) / prev
+
+    # "Never negative" is only meaningful over a real history, and only over
+    # years that were actually reported -- an unreported year is unknown.
+    net_income = [
+        (stmt.net_income if stmt.is_reported("net_income") else None)
+        for stmt in inc
+    ]
+    known = [v for v in net_income if v is not None]
+
+    if len(known) < min_years_history:
+        return SuspensionCheck(
+            False,
+            f'only {len(known)}yr of net income reported, need '
+            f'{min_years_history} to claim "never negative"',
+            growth,
+            len(known),
+        )
+    if any(v is None for v in net_income):
+        return SuspensionCheck(
+            False,
+            'a year of net income is unreported -- cannot claim "never negative"',
+            growth,
+            len(known),
+        )
+    if any(v < 0 for v in known):
+        return SuspensionCheck(
+            False, "has had a negative net income year", growth, len(known)
+        )
+    if growth < growth_threshold:
+        return SuspensionCheck(
+            False,
+            f"revenue growth {growth:.1%} < {growth_threshold:.1%}",
+            growth,
+            len(known),
+        )
+
+    return SuspensionCheck(
+        True,
+        f"revenue +{growth:.1%} and no negative net income across {len(known)}yr",
+        growth,
+        len(known),
+    )
+
+
 class ConfidenceTier(str, Enum):
     VERIFIED = "verified"
     SCREENING = "screening"
@@ -80,6 +176,12 @@ class LensResult:
     passed_criteria: list[str] = field(default_factory=list)
     failed_criteria: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    # False when the lens could not be computed at all, as opposed to
+    # computing a bad answer. Only the ROIC lens sets it today; a lens that
+    # never claims unmeasurability keeps the True default.
+    measured: bool = True
+    # Lens 1 only: the Tashi addendum removed the gross-margin criterion.
+    gross_margin_suspended: bool = False
 
 
 @dataclass
@@ -95,6 +197,11 @@ class SixfoldScore:
     out_of_scope_reason: str = ""
     sector: str = ""
     historical_percentile: float | None = None
+    # ROIC is the framework's central question and its heaviest lens. When it
+    # cannot be answered the name is scored neutrally rather than badly -- and
+    # is not bought. The executor reads this flag; see SixfoldExecutor.
+    roic_measured: bool = False
+    gross_margin_suspended: bool = False
 
 
 class SixfoldEngine:
@@ -153,6 +260,13 @@ class SixfoldEngine:
                 f"[{lr.name}] lose {c}" for c in lr.passed_criteria[:1]
             )
 
+        roic_lens = next(
+            (lr for lr in lens_results if lr.name == "Return on Invested Capital"), None
+        )
+        buffett_lens = next(
+            (lr for lr in lens_results if lr.name == "Buffett Durable Advantage"), None
+        )
+
         hist_lens = next((lr for lr in lens_results if lr.name == "Historical Returns"), None)
         hist_pct = None
         if hist_lens and hist_lens.notes:
@@ -172,6 +286,8 @@ class SixfoldEngine:
             would_lower=would_lower[:3],
             sector=data.sector,
             historical_percentile=hist_pct,
+            roic_measured=bool(roic_lens and roic_lens.measured),
+            gross_margin_suspended=bool(buffett_lens and buffett_lens.gross_margin_suspended),
         )
 
     def _check_scope(self, data: FundamentalData) -> dict:
@@ -207,11 +323,32 @@ class SixfoldEngine:
         cf = data.cash_flows[0] if data.cash_flows else None
 
         criteria_score = 0.0
-        total_criteria = 8
 
-        # Gross margin >= 40%
-        if inc.revenue > 0:
+        # Gross margin >= 40%, subject to the Tashi addendum below.
+        gross_margin = None
+        if inc.revenue > 0 and inc.is_reported("gross_profit"):
             gross_margin = inc.gross_profit / inc.revenue
+
+        # Relief valve only: the criterion is suspended solely where it would
+        # otherwise cost the company a point. A margin that already clears 40%
+        # keeps the point it earned.
+        would_fail = gross_margin is not None and gross_margin < 0.40
+        suspension = (
+            gross_margin_suspension(data)
+            if would_fail
+            else SuspensionCheck(False, "gross margin not below 40% -- nothing to suspend")
+        )
+        total_criteria = 7 if suspension.suspended else 8
+        result.gross_margin_suspended = suspension.suspended
+
+        if suspension.suspended:
+            result.notes.append(
+                f"Gross-margin criterion SUSPENDED (Tashi addendum): {suspension.reason}"
+            )
+            result.notes.append(
+                f"Gross margin {gross_margin:.1%} would have failed the 40% gate; not scored"
+            )
+        elif gross_margin is not None:
             if gross_margin >= 0.40:
                 criteria_score += 1
                 result.passed_criteria.append(f"Gross margin {gross_margin:.1%} >= 40%")
@@ -303,6 +440,16 @@ class SixfoldEngine:
             weight=self.LENS_WEIGHTS["roic"] / 100.0,
         )
 
+        # Unmeasurable is NOT the same as bad. A company whose ROIC cannot be
+        # computed -- banks file no classified balance sheet, some filers tag
+        # no operating income -- previously scored 0 on the heaviest lens,
+        # which reads as "destroying value" when the truth is "not measured
+        # here". These paths score NEUTRAL and set measured=False, and a name
+        # whose ROIC is unmeasured is never bought: ROIC is the framework's
+        # central question, so failing to answer it is a reason to pass, not a
+        # reason to rank low.
+        result.measured = False
+
         if not data.income_statements or not data.balance_sheets:
             result.notes.append("Insufficient data for ROIC calculation")
             return result
@@ -311,8 +458,16 @@ class SixfoldEngine:
         bal = data.balance_sheets[0]
 
         # NOPAT = Operating Income * (1 - effective tax rate)
+        if not inc.is_reported("operating_income"):
+            result.score = 50.0
+            result.notes.append(
+                "Operating income not reported -- ROIC unmeasurable, scored neutral"
+            )
+            return result
+
         if inc.operating_income <= 0:
-            result.notes.append("Non-positive operating income -- ROIC not calculable")
+            result.measured = True
+            result.notes.append("Non-positive operating income -- no return on capital")
             result.failed_criteria.append("Negative/zero operating income")
             return result
 
@@ -328,6 +483,14 @@ class SixfoldEngine:
         operating_cash = min(bal.cash_and_equivalents, inc.revenue * 0.02)
         excess_cash = bal.cash_and_equivalents - operating_cash
 
+        if not bal.is_reported("current_assets") or not bal.is_reported("current_liabilities"):
+            result.score = 50.0
+            result.notes.append(
+                "Working capital not reported (unclassified balance sheet) -- "
+                "ROIC unmeasurable, scored neutral"
+            )
+            return result
+
         net_working_capital = bal.current_assets - bal.current_liabilities - excess_cash
         invested_capital = (
             net_working_capital
@@ -337,7 +500,40 @@ class SixfoldEngine:
         )
 
         if invested_capital <= 0:
-            result.notes.append("Non-positive invested capital -- ROIC not meaningful")
+            # Non-positive invested capital has two very different causes and
+            # scoring both 0 conflated them on the heaviest lens.
+            #
+            # Verified on live data: AAPL's invested capital is genuinely
+            # -$6.2B (current assets $148.0B, current liabilities $165.6B, net
+            # PPE $49.8B -- every input populated). A business earning positive
+            # NOPAT on negative capital employed has an unbounded return on
+            # capital; that is the BEST possible outcome for this lens, and
+            # scoring it the same as a value-destroyer cost AAPL 25 points and
+            # demoted it from buy candidate (>=65) to hold. The bias runs
+            # systematically against exactly the capital-light,
+            # negative-working-capital businesses SIXFOLD exists to find.
+            #
+            # A missing input is still unmeasurable and stays neutral rather
+            # than being rewarded: absence of data is not evidence of capital
+            # efficiency.
+            inputs_complete = bal.is_reported("net_ppe")
+            if inputs_complete and nopat > 0:
+                result.measured = True
+                result.score = 100.0
+                result.passed_criteria.append(
+                    f"Negative invested capital (${invested_capital:,.0f}) with "
+                    f"positive NOPAT (${nopat:,.0f}) -- unbounded return on capital"
+                )
+                result.notes.append(
+                    "Capital-light: business funds itself from working capital "
+                    "and needs no net invested capital"
+                )
+            else:
+                result.score = 50.0
+                result.notes.append(
+                    "Non-positive invested capital with incomplete inputs -- "
+                    "ROIC unmeasurable, scored neutral"
+                )
             return result
 
         roic = nopat / invested_capital
@@ -376,6 +572,7 @@ class SixfoldEngine:
             result.score = 15.0
             result.failed_criteria.append(f"ROIC spread {spread:.1%} -- destroying value")
 
+        result.measured = True
         return result
 
     # -------------------------------------------------------------------

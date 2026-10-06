@@ -16,7 +16,28 @@ log = logging.getLogger(__name__)
 
 
 @dataclass
-class IncomeStatement:
+class _Reported:
+    """Mixin: which numeric fields the filing actually reported.
+
+    Every field below defaults to 0.0, so an absent line item and a genuine
+    zero are the same value once parsed. That conflation is only safe while
+    nothing reads meaning into the difference -- and the ROIC lens does: a
+    bank files no classified balance sheet, so its current assets are not
+    zero, they are *not reported*, and scoring the two identically reads
+    "unmeasurable" as "destroying value".
+
+    `missing` records the names the provider could not find. It defaults to
+    empty, so a hand-constructed statement reads as fully reported, which is
+    the right default for a fixture that states its own numbers.
+    """
+    missing: frozenset[str] = frozenset()
+
+    def is_reported(self, field_name: str) -> bool:
+        return field_name not in self.missing
+
+
+@dataclass
+class IncomeStatement(_Reported):
     revenue: float = 0.0
     cost_of_revenue: float = 0.0
     gross_profit: float = 0.0
@@ -30,7 +51,7 @@ class IncomeStatement:
 
 
 @dataclass
-class BalanceSheet:
+class BalanceSheet(_Reported):
     total_assets: float = 0.0
     total_liabilities: float = 0.0
     stockholders_equity: float = 0.0
@@ -100,16 +121,88 @@ class FundamentalData:
     industry: str = ""
 
 
-def _safe_float(val, default: float = 0.0) -> float:
+def _opt_float(val) -> float | None:
+    """The value as a float, or None when it was never really reported.
+
+    A financial figure is usable only if it is a real, finite number. Both
+    yfinance and a missing DataFrame row express "not reported" as None, and
+    `float(None)` raises while `float("")` also raises -- but `float(True)`
+    is 1.0 and `float(" 3 ")` is 3.0, so a loose coercion can turn a flag or
+    a stray string into a confident number. Everything that must distinguish
+    "absent" from "zero" goes through here.
+    """
     if val is None:
-        return default
+        return None
+    # bool is a subclass of int, so it would coerce to 1.0/0.0 silently.
+    if isinstance(val, bool):
+        return None
+    if not isinstance(val, (int, float, str)):
+        return None
+    if isinstance(val, str) and not val.strip():
+        return None
     try:
         f = float(val)
-        if f != f:  # NaN check
-            return default
-        return f
     except (ValueError, TypeError):
-        return default
+        return None
+    if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
+        return None
+    return f
+
+
+def _safe_float(val, default: float = 0.0) -> float:
+    """`_opt_float` with a fallback, for the many call sites where a
+    missing value genuinely is best treated as `default`."""
+    f = _opt_float(val)
+    return default if f is None else f
+
+
+# yfinance row label for each dataclass field. Kept as data rather than inline
+# lookups so the "was this reported?" pass and the value pass cannot drift.
+INCOME_KEYS: dict[str, str] = {
+    "revenue": "Total Revenue",
+    "cost_of_revenue": "Cost Of Revenue",
+    "gross_profit": "Gross Profit",
+    "sga_expense": "Selling General And Administration",
+    "operating_income": "Operating Income",
+    "net_income": "Net Income",
+    "ebitda": "EBITDA",
+    "interest_expense": "Interest Expense",
+    "tax_provision": "Tax Provision",
+    "basic_eps": "Basic EPS",
+}
+
+BALANCE_KEYS: dict[str, str] = {
+    "total_assets": "Total Assets",
+    "total_liabilities": "Total Liabilities Net Minority Interest",
+    "stockholders_equity": "Stockholders Equity",
+    "total_debt": "Total Debt",
+    "long_term_debt": "Long Term Debt",
+    "cash_and_equivalents": "Cash And Cash Equivalents",
+    "current_assets": "Current Assets",
+    "current_liabilities": "Current Liabilities",
+    "goodwill": "Goodwill",
+    "intangible_assets": "Other Intangible Assets",
+    "net_ppe": "Net PPE",
+    "total_capitalization": "Total Capitalization",
+}
+
+
+def _build(cls, df, col, keys: dict[str, str]):
+    """Build a statement, recording which fields the filing never reported.
+
+    Values still default to 0.0 so every existing arithmetic call site is
+    unchanged; `missing` carries the information those call sites throw away.
+    """
+    values: dict[str, float | None] = {}
+    for field_name, row_label in keys.items():
+        raw = df.loc[row_label, col] if row_label in df.index else None
+        values[field_name] = _opt_float(raw)
+
+    missing = frozenset(name for name, v in values.items() if v is None)
+    return cls(
+        missing=missing,
+        **{name: (0.0 if v is None else v) for name, v in values.items()},
+    )
 
 
 class FinancialDataProvider:
@@ -198,18 +291,7 @@ class FinancialDataProvider:
 
         statements = []
         for col in df.columns:
-            statements.append(IncomeStatement(
-                revenue=_safe_float(df.loc["Total Revenue", col] if "Total Revenue" in df.index else None),
-                cost_of_revenue=_safe_float(df.loc["Cost Of Revenue", col] if "Cost Of Revenue" in df.index else None),
-                gross_profit=_safe_float(df.loc["Gross Profit", col] if "Gross Profit" in df.index else None),
-                sga_expense=_safe_float(df.loc["Selling General And Administration", col] if "Selling General And Administration" in df.index else None),
-                operating_income=_safe_float(df.loc["Operating Income", col] if "Operating Income" in df.index else None),
-                net_income=_safe_float(df.loc["Net Income", col] if "Net Income" in df.index else None),
-                ebitda=_safe_float(df.loc["EBITDA", col] if "EBITDA" in df.index else None),
-                interest_expense=_safe_float(df.loc["Interest Expense", col] if "Interest Expense" in df.index else None),
-                tax_provision=_safe_float(df.loc["Tax Provision", col] if "Tax Provision" in df.index else None),
-                basic_eps=_safe_float(df.loc["Basic EPS", col] if "Basic EPS" in df.index else None),
-            ))
+            statements.append(_build(IncomeStatement, df, col, INCOME_KEYS))
         return statements
 
     def _extract_balance(self, ticker: yf.Ticker) -> list[BalanceSheet]:
@@ -219,23 +301,7 @@ class FinancialDataProvider:
 
         sheets = []
         for col in df.columns:
-            def g(key):
-                return _safe_float(df.loc[key, col] if key in df.index else None)
-
-            sheets.append(BalanceSheet(
-                total_assets=g("Total Assets"),
-                total_liabilities=g("Total Liabilities Net Minority Interest"),
-                stockholders_equity=g("Stockholders Equity"),
-                total_debt=g("Total Debt"),
-                long_term_debt=g("Long Term Debt"),
-                cash_and_equivalents=g("Cash And Cash Equivalents"),
-                current_assets=g("Current Assets"),
-                current_liabilities=g("Current Liabilities"),
-                goodwill=g("Goodwill"),
-                intangible_assets=g("Other Intangible Assets"),
-                net_ppe=g("Net PPE"),
-                total_capitalization=g("Total Capitalization"),
-            ))
+            sheets.append(_build(BalanceSheet, df, col, BALANCE_KEYS))
         return sheets
 
     def _extract_cashflow(self, ticker: yf.Ticker) -> list[CashFlow]:

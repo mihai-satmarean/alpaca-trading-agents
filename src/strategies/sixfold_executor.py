@@ -247,6 +247,25 @@ class SixfoldExecutor:
             except Exception:
                 score_obj = None
             composite = float(getattr(score_obj, "composite_score", 0.0) or 0.0)
+
+            # ROIC is the framework's central question and its heaviest lens.
+            # Where it cannot be computed at all -- a bank filing no classified
+            # balance sheet, a filer tagging no operating income -- the lens now
+            # scores a neutral 50 rather than a 0 that reads as "destroying
+            # value". That correction is right for the ranking and wrong for the
+            # buy list on its own: a neutral 50 on 25 points can carry a name
+            # over the buy threshold on the strength of the five lenses that
+            # happened to be computable. Not being able to answer the central
+            # question is a reason to pass on a name, not a reason to rank it
+            # low, so it is filtered here rather than penalised there.
+            #
+            # A score object that is missing or unreadable also fails this gate:
+            # the default is False, so absence of evidence does not buy.
+            if not bool(getattr(score_obj, "roic_measured", False)):
+                self._reject(sym, "ROIC could not be measured; the framework's "
+                                  "central question is unanswered")
+                continue
+
             council = evaluate_equity_buy(sym, composite)
             if not council.approved:
                 reasons = "; ".join(

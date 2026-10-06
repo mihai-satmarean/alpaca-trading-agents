@@ -138,10 +138,10 @@ def render_daily_pnl_bars(client):
     best = max(daily_pnl) if daily_pnl else 0
     worst = min(daily_pnl) if daily_pnl else 0
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Winning days", f"{wins}")
-    c2.metric("Losing days", f"{losses}")
-    c3.metric("Best day", f"${best:+,.0f}")
-    c4.metric("Worst day", f"${worst:+,.0f}")
+    c1.metric("Positive days", f"{wins}")
+    c2.metric("Negative days", f"{losses}")
+    c3.metric("Strongest day", f"${best:+,.0f}")
+    c4.metric("Weakest day", f"${worst:+,.0f}")
 
 
 def render_drawdown_chart(client):
@@ -204,20 +204,20 @@ def render_strategy_metrics(tracker: PositionTracker):
     rows = []
     for name, m in sorted(strategies.items(), key=lambda x: x[1]["total_pnl"], reverse=True):
         total = m["wins"] + m["losses"]
-        win_rate = (m["wins"] / total * 100) if total > 0 else 0
-        avg_win = (m["win_pnl"] / m["wins"]) if m["wins"] > 0 else 0
-        avg_loss = (m["loss_pnl"] / m["losses"]) if m["losses"] > 0 else 0
+        hit_rate = (m["wins"] / total * 100) if total > 0 else 0
+        avg_gain = (m["win_pnl"] / m["wins"]) if m["wins"] > 0 else 0
+        avg_decline = (m["loss_pnl"] / m["losses"]) if m["losses"] > 0 else 0
         profit_factor = (m["win_pnl"] / m["loss_pnl"]) if m["loss_pnl"] > 0 else float("inf") if m["win_pnl"] > 0 else 0
 
         rows.append({
             "Strategy": name.replace("_", " ").title(),
             "Trades": m["trades"],
-            "Wins": m["wins"],
-            "Losses": m["losses"],
-            "Win Rate": f"{win_rate:.0f}%",
+            "Positive": m["wins"],
+            "Negative": m["losses"],
+            "Hit Rate": f"{hit_rate:.0f}%",
             "Total P&L": m["total_pnl"],
-            "Avg Win": f"${avg_win:,.2f}",
-            "Avg Loss": f"-${avg_loss:,.2f}",
+            "Avg Gain": f"${avg_gain:,.2f}",
+            "Avg Decline": f"-${avg_decline:,.2f}",
             "Profit Factor": f"{profit_factor:.2f}" if profit_factor != float("inf") else "inf",
         })
 

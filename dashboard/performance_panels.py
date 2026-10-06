@@ -28,7 +28,11 @@ STARTING_EQUITY = 100_000.0
 
 
 def _fetch_portfolio_history(client, period: str = "all", timeframe: str = "1D"):
-    """Fetch equity history from Alpaca. Returns (timestamps, equity, pnl) or empties."""
+    """Fetch equity history from Alpaca. Returns (timestamps, equity, pnl, base) or empties.
+    Uses st.session_state to avoid redundant API calls within the same page render."""
+    cache_key = f"_perf_history_{period}_{timeframe}"
+    if cache_key in st.session_state:
+        return st.session_state[cache_key]
     try:
         from alpaca.trading.requests import GetPortfolioHistoryRequest
         h = client.trading.get_portfolio_history(
@@ -45,10 +49,12 @@ def _fetch_portfolio_history(client, period: str = "all", timeframe: str = "1D")
         equity = [float(e) for e in (h.equity or [])]
         pnl = [float(p) for p in (h.profit_loss or [])]
         base = float(h.base_value) if getattr(h, "base_value", None) else STARTING_EQUITY
-        return timestamps, equity, pnl, base
+        result = timestamps, equity, pnl, base
     except Exception as exc:
         log.warning("Portfolio history unavailable: %s", exc)
-        return [], [], [], STARTING_EQUITY
+        result = [], [], [], STARTING_EQUITY
+    st.session_state[cache_key] = result
+    return result
 
 
 @st.cache_data(ttl=120)

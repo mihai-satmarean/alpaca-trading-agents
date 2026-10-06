@@ -36,9 +36,15 @@ try:
 except ImportError:
     from dashboard.council import render_council  # tests import the package
 try:
-    from performance_panels import render_performance_tab
+    from performance_panels import (
+        render_performance_tab, render_equity_curve,
+        render_daily_pnl_bars, render_drawdown_chart,
+    )
 except ImportError:
-    from dashboard.performance_panels import render_performance_tab
+    from dashboard.performance_panels import (
+        render_performance_tab, render_equity_curve,
+        render_daily_pnl_bars, render_drawdown_chart,
+    )
 
 load_dotenv()
 
@@ -1084,6 +1090,17 @@ def main():
             render_performance_tab(client, tracker)
 
     with tab_overview:
+        with panel("Equity curve"):
+            render_equity_curve(client)
+
+        col_perf_l, col_perf_r = st.columns(2)
+        with col_perf_l:
+            with panel("Daily P&L"):
+                render_daily_pnl_bars(client)
+        with col_perf_r:
+            with panel("Drawdown"):
+                render_drawdown_chart(client)
+
         st.subheader("Positions")
         with panel("The positions table"):
             render_positions(client)

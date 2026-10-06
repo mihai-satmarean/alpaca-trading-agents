@@ -39,11 +39,13 @@ try:
     from performance_panels import (
         render_performance_tab, render_equity_curve,
         render_daily_pnl_bars, render_drawdown_chart,
+        render_daily_summary_metrics,
     )
 except ImportError:
     from dashboard.performance_panels import (
         render_performance_tab, render_equity_curve,
         render_daily_pnl_bars, render_drawdown_chart,
+        render_daily_summary_metrics,
     )
 
 load_dotenv()
@@ -222,8 +224,8 @@ def _session_series(client):
         return [], None
 
 
-def render_status_bar(client: AlpacaClient):
-    """Compact single-line header: market status, equity, daily and total P&L."""
+def render_expandable_hero(client: AlpacaClient, tracker: PositionTracker):
+    """Hero header that collapses to a compact summary, expands to the full dark hero."""
     account = client.get_account()
     equity = float(account.equity)
     last = float(getattr(account, "last_equity", equity) or equity)
@@ -231,30 +233,20 @@ def render_status_bar(client: AlpacaClient):
     try:
         clock = client.get_clock()
         is_open = bool(clock.is_open)
-        status = "OPEN" if is_open else f"CLOSED -- opens {clock.next_open.astimezone(ET):%a %H:%M} ET"
     except Exception:
-        is_open, status = False, "Status unavailable"
+        is_open = False
 
-    dot_color = "#22c55e" if is_open else "#ef4444"
-    today_color = "#22c55e" if f["today"] >= 0 else "#ef4444"
-    since_color = "#22c55e" if f["since_start"] >= 0 else "#ef4444"
-
-    st.markdown(f"""
-<div style="display:flex; align-items:center; gap:24px; padding:12px 16px;
-            background:#111; border-radius:8px; flex-wrap:wrap; font-family:monospace;">
-  <span style="color:#888; font-size:0.85rem;">
-    <span style="color:{dot_color};">&#9679;</span> {status}
-  </span>
-  <span style="color:#fff; font-size:1.4rem; font-weight:700; letter-spacing:-0.5px;">
-    ${equity:,.2f}
-  </span>
-  <span style="color:{today_color}; font-size:0.95rem;">
-    today {f['today']:+,.2f} ({f['today_pct']:+.2f}%)
-  </span>
-  <span style="color:{since_color}; font-size:0.95rem;">
-    since start {f['since_start']:+,.2f} ({f['since_start_pct']:+.2f}%)
-  </span>
-</div>""", unsafe_allow_html=True)
+    dot = "OPEN" if is_open else "CLOSED"
+    t_sign = "+" if f["today"] >= 0 else ""
+    s_sign = "+" if f["since_start"] >= 0 else ""
+    label = (
+        f"**${equity:,.2f}**  |  "
+        f"today {t_sign}${f['today']:,.0f} ({f['today_pct']:+.1f}%)  |  "
+        f"since start {s_sign}${f['since_start']:,.0f} ({f['since_start_pct']:+.1f}%)  |  "
+        f"{dot}"
+    )
+    with st.expander(label, expanded=False):
+        render_hero(client, tracker)
 
 
 def render_hero(client: AlpacaClient, tracker: PositionTracker):
@@ -1100,7 +1092,7 @@ def main():
         st.info("Set ALPACA_API_KEY and ALPACA_SECRET_KEY in .env")
         return
 
-    render_status_bar(client)
+    render_expandable_hero(client, tracker)
 
     with panel("Equity curve"):
         render_equity_curve(client)
@@ -1112,6 +1104,8 @@ def main():
     with col_perf_r:
         with panel("Drawdown"):
             render_drawdown_chart(client)
+
+    render_daily_summary_metrics(client)
 
     with st.expander("Capital allocation", expanded=False):
         render_sleeves(allocator)

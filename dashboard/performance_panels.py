@@ -139,15 +139,42 @@ def render_daily_pnl_bars(client):
     )
     st.plotly_chart(fig, use_container_width=True)
 
+
+def render_daily_summary_metrics(client):
+    """Compact inline summary: pos/neg days, best/worst day -- designed for a single row."""
+    timestamps, equity, pnl, base = _fetch_portfolio_history(client)
+    if len(pnl) < 2:
+        return
+    daily_pnl = [pnl[i] - pnl[i - 1] for i in range(1, len(pnl))]
+    if not daily_pnl:
+        return
     wins = sum(1 for v in daily_pnl if v > 0)
     losses = sum(1 for v in daily_pnl if v < 0)
-    best = max(daily_pnl) if daily_pnl else 0
-    worst = min(daily_pnl) if daily_pnl else 0
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Pos. days", f"{wins}")
-    c2.metric("Neg. days", f"{losses}")
-    c3.metric("Best day", f"${best:+,.0f}")
-    c4.metric("Worst day", f"${worst:+,.0f}")
+    best = max(daily_pnl)
+    worst = min(daily_pnl)
+    total_days = wins + losses
+    hit_rate = (wins / total_days * 100) if total_days else 0
+
+    items = [
+        ("Pos", str(wins), "#22c55e"),
+        ("Neg", str(losses), "#ef4444"),
+        ("Hit rate", f"{hit_rate:.0f}%", "#a78bfa"),
+        ("Best", f"${best:+,.0f}", "#22c55e"),
+        ("Worst", f"${worst:+,.0f}", "#ef4444"),
+        ("Avg", f"${sum(daily_pnl)/len(daily_pnl):+,.0f}", "#94a3b8"),
+    ]
+    cells = "".join(
+        f'<div style="text-align:center; flex:1; min-width:80px;">'
+        f'<div style="color:#888; font-size:0.7rem; text-transform:uppercase; letter-spacing:0.5px;">{label}</div>'
+        f'<div style="color:{color}; font-size:1.1rem; font-weight:600;">{value}</div>'
+        f'</div>'
+        for label, value, color in items
+    )
+    st.markdown(
+        f'<div style="display:flex; gap:8px; padding:8px 0; justify-content:space-around; '
+        f'border-top:1px solid #333; margin-top:4px;">{cells}</div>',
+        unsafe_allow_html=True,
+    )
 
 
 def render_drawdown_chart(client):

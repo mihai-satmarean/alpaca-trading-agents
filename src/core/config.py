@@ -112,6 +112,18 @@ class StrategyConfig:
         return int(self.sixfold.get("max_concurrent", 10))
 
     @property
+    def sixfold_take_profit_pct(self) -> float:
+        return float(self.sixfold.get("take_profit_pct", 35.0))
+
+    @property
+    def sixfold_time_stop_days(self) -> float:
+        return float(self.sixfold.get("time_stop_days", 183.0))
+
+    @property
+    def sixfold_reentry_lockout_days(self) -> float:
+        return float(self.sixfold.get("reentry_lockout_days", 56.0))
+
+    @property
     def vampire_engine_overrides(self) -> dict[str, Any]:
         """The yml keys VampireConfig accepts, so the file is the truth.
 

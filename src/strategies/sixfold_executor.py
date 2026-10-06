@@ -12,12 +12,16 @@ strictest treatment rather than the most trusting.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 
 from alpaca.trading.enums import OrderSide, TimeInForce
 from alpaca.trading.requests import LimitOrderRequest
 
+from src.core import sixfold_registry as registry
 from src.core.finance_advisor import evaluate_equity_buy
+from src.core.notify import notify
+from src.strategies.sixfold_exits import DEFAULT_CFG, ExitCfg, exit_decision
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +44,9 @@ class SixfoldOrder:
 class SixfoldExecutor:
     def __init__(self, client, data, tracker, breaker, allocator, analyst,
                  excluded: set[str] | None = None,
-                 max_concurrent: int = MAX_CONCURRENT):
+                 max_concurrent: int = MAX_CONCURRENT,
+                 exit_cfg: ExitCfg = DEFAULT_CFG,
+                 reentry_lockout_days: float = 56.0):
         self._client = client
         self._data = data
         self._tracker = tracker
@@ -49,6 +55,8 @@ class SixfoldExecutor:
         self._analyst = analyst
         self._excluded = {s.upper() for s in (excluded or set())}
         self._max_concurrent = max_concurrent
+        self._exit_cfg = exit_cfg
+        self._reentry_lockout_days = reentry_lockout_days
         self.last_orders: list[dict] = []
         self.last_rejections: list[dict] = []
 
@@ -87,46 +95,63 @@ class SixfoldExecutor:
         return sum(v for k, v in held.items() if k not in self._excluded)
 
     def run_disposals(self) -> list[dict]:
-        """Exit names the analyst no longer rates as holdable.
+        """Exit names that should no longer be held, on any of three rules.
 
-        The analyst has always computed these (action "dispose" below 50, or
-        "avoid" below 40) and nothing ever consumed them, so the executor
-        could open a position and never close one. A scoring system whose
-        sell signal is unreachable is a buy-only system wearing a score.
+        1. Score-dispose: the analyst's own action band (below the hold
+           threshold). This is the ORIGINAL rule and its scope is
+           unchanged: any held name the analyst currently flags, whether or
+           not this process registered opening it. See the reasoning this
+           docstring used to carry for why the two rules below were once
+           deliberately left out.
 
-        Scope is deliberately just the disposition bands. SPEC 3.8 (exit) is
-        tagged [UNKNOWN. Second most important gap], and the spec's own
-        convention says [UNKNOWN] means implementation is blocked on it;
-        every rule inside it is [P], "proposed default that Tashi must
-        confirm or replace." So the +35% target, the gap-close exit and the
-        6-month time stop are NOT implemented here - they are the document
-        author's placeholders, not Tashi's rules, and building an automatic
-        seller on them would invent an authority the spec explicitly
-        disclaims. The bands below are different: they are the analyst's own
-        thresholds, already in this codebase and already driving the buy
-        side, so consuming them is self-consistent rather than invented.
+        2 & 3. Time stop (default 183 days) and take-profit (default +35%),
+           ported from the live Tradier deployment of this same framework
+           2026-09-10, scoped to symbols src/core/sixfold_registry.py
+           recorded THIS process opening. A CSP-assignment share, a
+           pre-existing position, or a buy whose fill was never confirmed
+           has no recorded age and cannot trigger either rule -- only the
+           score-dispose rule above can sell it, exactly as before this
+           change. Frank made the call to port these after reviewing that
+           the live Tradier side already runs them; see the plan file for
+           the full reasoning this docstring used to hold.
 
-        SPEC 3.7's -30% single-name rail is also absent on purpose: the spec
-        says it "forces a logged human decision", not an automatic sale.
+        Iteration is deliberately over held names that are EITHER
+        score-flagged OR registry-tracked, not score-flagged alone: a
+        winning position by definition will not be score-flagged (a good
+        score is why it was bought), so gating the loop on the analyst's
+        disposal set alone would make the time stop and take-profit dead
+        code for the scenario they exist to handle.
+
+        registry.reconcile() runs first and clears any registry entry for a
+        symbol no longer actually held -- the self-healing half of the
+        optimistic open-date write at buy time (see run_cycle): an order
+        that never filled or was canceled leaves at most one cycle's worth
+        of phantom entry before this clears it, rather than a synchronous
+        fill-confirmation poll added to the buy loop's hot path.
 
         Exits are NOT gated on the advisory council. The council is a buy
         gate; making an exit wait for AI approval would mean a cluster
         outage silently blocks the system from leaving a deteriorating
         position, which inverts the safety it exists to provide.
         """
+        held = self._held()
+        registry.reconcile(set(held))
+
         try:
             flagged = {s.upper() for s in self._analyst.get_disposal_candidates()}
         except Exception:
             log.exception("SIXFOLD analyst unavailable for disposals")
-            return []
-        if not flagged:
+            flagged = set()
+
+        registry_tracked = registry.open_symbols()
+        candidates = (flagged | registry_tracked) & set(held)
+        if not candidates:
             return []
 
-        held = self._held()
         covered = self._underlyings_with_short_calls()
         sold: list[dict] = []
 
-        for sym in sorted(flagged & set(held)):
+        for sym in sorted(candidates):
             if sym in self._excluded:
                 # Another sleeve owns this ticker; selling it here would close
                 # a position this strategy never opened.
@@ -146,12 +171,23 @@ class SixfoldExecutor:
             try:
                 score_obj = self._analyst.scores.get(sym)
             except Exception:
-                # Reporting only: the sale is driven by the analyst's action
-                # band, not by this number, so an unreadable score must not
-                # block the exit. Logged rather than swallowed.
                 log.warning("%s: score unreadable for the disposal record",
                             sym, exc_info=True)
-            composite = float(getattr(score_obj, "composite_score", 0.0) or 0.0)
+            composite = getattr(score_obj, "composite_score", None)
+            composite = float(composite) if composite is not None else None
+
+            plpc = None
+            try:
+                snap = self._tracker.get_snapshot()
+                plpc = float(snap.positions.get(sym, {}).get("unrealized_plpc"))
+            except (TypeError, ValueError, KeyError):
+                plpc = None
+            age = registry.age_days(sym)
+            is_tracked = sym in registry_tracked
+
+            decision = exit_decision(plpc, sym in flagged, age, is_tracked, self._exit_cfg)
+            if not decision.exit:
+                continue
 
             try:
                 self._client.close_position(sym)
@@ -160,13 +196,34 @@ class SixfoldExecutor:
                 self._reject(sym, "broker rejected the disposal")
                 continue
 
+            # The score itself is reporting only, same as before this change:
+            # the disposal DECISION already came from the analyst's action
+            # band (sym in flagged) or the registry-scoped rules above, so an
+            # unreadable score enriches this string but never blocks the sale.
+            reason = decision.reason
+            if reason == "score below the hold band" and composite is not None:
+                reason = f"score deteriorated to {composite:.1f}"
+
+            registry.record_disposal(sym, reason, self._reentry_lockout_days)
+            registry.clear(sym)
+
             entry = {"strategy": "sixfold", "symbol": sym, "side": "sell",
                      "notional": round(held[sym], 2), "score": composite,
-                     "reason": f"SIXFOLD disposal: score {composite:.1f} below the hold band"}
+                     "reason": f"SIXFOLD disposal: {reason}"}
             sold.append(entry)
             self.last_orders.append(entry)
-            log.info("SIXFOLD disposed %s (score %.1f, $%.0f)",
-                     sym, composite, held[sym])
+            log.info("SIXFOLD disposed %s (%s, $%.0f)", sym, reason, held[sym])
+
+            if is_tracked and ("time stop" in decision.reason or "profit target" in decision.reason):
+                # New triggers only. The pre-existing score-dispose path has
+                # never alerted, and retrofitting that is a separate
+                # decision from porting these two rules; see the plan file.
+                notify(
+                    f"SIXFOLD disposed {sym}",
+                    f"{decision.reason}. ${held[sym]:,.0f}, "
+                    f"{self._reentry_lockout_days:.0f}-day re-entry lockout applied.",
+                    severity="default",
+                )
 
         return sold
 
@@ -193,6 +250,18 @@ class SixfoldExecutor:
             log.exception("SIXFOLD analyst unavailable")
             return {"status": "analyst_error", "orders": [], "disposals": disposed}
 
+        # Read once for the whole cycle, not per candidate: the live universe
+        # is the S&P 400, and re-parsing a file per candidate would run
+        # hundreds of times per 10-minute cycle. Fails CLOSED, deliberately:
+        # an unreadable lockout table must not read as "nothing is locked
+        # out", the one check whose purpose is not immediately rebuying a
+        # name just sold. See sixfold_registry.load_lockouts().
+        try:
+            lockouts = registry.load_lockouts()
+        except Exception:
+            log.exception("SIXFOLD lockout table unreadable; skipping the buy pass entirely")
+            return {"status": "lockouts_unreadable", "orders": [], "disposals": disposed}
+
         held = self._held()
         # Count only this sleeve's own positions against its concurrency
         # limit. _held() returns every equity position in the account, so
@@ -214,6 +283,10 @@ class SixfoldExecutor:
                 continue
             if sym in held:
                 self._reject(sym, "already held")
+                continue
+            if sym in lockouts:
+                self._reject(sym, f"re-entry locked out until "
+                                  f"{time.strftime('%Y-%m-%d', time.gmtime(lockouts[sym]))}")
                 continue
             if len(placed) + len(own_held) >= self._max_concurrent:
                 self._reject(sym, f"at the {self._max_concurrent}-position limit")
@@ -300,6 +373,12 @@ class SixfoldExecutor:
             self.last_orders.append(entry)
             self._tracker.record_trade(symbol=sym, side="buy", qty=qty,
                                        price=limit, strategy="sixfold")
+            # Optimistic: this DAY limit order may not fill. run_disposals()'s
+            # registry.reconcile() clears this entry on the next cycle if the
+            # symbol never actually ends up held, so an unfilled or canceled
+            # order leaves at most one cycle's phantom entry rather than
+            # needing a synchronous fill-confirmation poll here.
+            registry.record_open(sym)
             log.info("SIXFOLD bought %d %s at %.2f (%s)", qty, sym, limit, f"${notional:,.0f}")
 
         return {"status": "ok", "orders": placed, "disposals": disposed,

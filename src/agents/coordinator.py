@@ -28,6 +28,7 @@ from src.core.position_tracker import PositionTracker
 from src.risk.allocation import AllocationConfig, AllocationManager, parse_occ
 from src.risk.circuit_breakers import CircuitBreaker, RiskLimits
 from src.strategies.pendulum import PendulumParams
+from src.strategies.sixfold_exits import ExitCfg as SixfoldExitCfg
 from src.strategies.sixfold_executor import SixfoldExecutor
 
 log = logging.getLogger(__name__)
@@ -128,6 +129,11 @@ class Coordinator:
                 self._allocator, analyst,
                 excluded=set(cfg.vampire_symbols or []) | {cfg.pendulum_symbol},
                 max_concurrent=cfg.sixfold_max_concurrent,
+                exit_cfg=SixfoldExitCfg(
+                    take_profit_pct=cfg.sixfold_take_profit_pct,
+                    time_stop_days=cfg.sixfold_time_stop_days,
+                ),
+                reentry_lockout_days=cfg.sixfold_reentry_lockout_days,
             )
 
         self._running = False

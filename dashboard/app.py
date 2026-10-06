@@ -35,6 +35,10 @@ try:
     from council import render_council          # streamlit puts dashboard/ on sys.path
 except ImportError:
     from dashboard.council import render_council  # tests import the package
+try:
+    from performance_panels import render_performance_tab
+except ImportError:
+    from dashboard.performance_panels import render_performance_tab
 
 load_dotenv()
 
@@ -1065,15 +1069,19 @@ def main():
     unread = _unread_notification_count(read_journal(limit=200), st.session_state)
     notif_label = f"Notifications \U0001F534 {unread}" if unread else "Notifications"
 
-    (tab_overview, tab_council, tab_sixfold, tab_scanner,
+    (tab_overview, tab_performance, tab_council, tab_sixfold, tab_scanner,
      tab_notifications, tab_history) = st.tabs([
-        "Live Overview", "AI Council", "SIXFOLD Analysis", "Options Scanner",
-        notif_label, "Trade History"
+        "Live Overview", "Performance Analytics", "AI Council", "SIXFOLD Analysis",
+        "Options Scanner", notif_label, "Trade History"
     ])
 
     with tab_council:
         with panel("The AI council"):
             render_council(client, allocator, tracker)
+
+    with tab_performance:
+        with panel("Performance analytics"):
+            render_performance_tab(client, tracker)
 
     with tab_overview:
         st.subheader("Positions")

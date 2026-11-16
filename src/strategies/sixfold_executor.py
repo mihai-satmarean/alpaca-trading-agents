@@ -65,6 +65,46 @@ class SixfoldExecutor:
         return {s.upper(): abs(float(p.get("market_value", 0.0)))
                 for s, p in snap.positions.items() if len(s) <= 6}
 
+    def _open_buy_exposure(self) -> tuple[set[str], float] | None:
+        """Equity symbols with open BUY orders, plus estimated working notional.
+
+        Returns None when the broker's open-order book cannot be read, so the
+        caller can fail closed instead of trading blind.
+
+        Live 2026-11-16: the held check alone did not stop HLNE/LOPE stacking.
+        Each ~2-minute cycle saw no fill yet, placed another DAY limit buy, and
+        several fills landed as one concentrated overbuy (~$43k on HLNE). Open
+        buy orders must block re-entry and count against sleeve room.
+        """
+        symbols: set[str] = set()
+        notional = 0.0
+        try:
+            orders = self._client.get_orders("open") or []
+        except Exception:
+            log.warning("could not read open orders; failing closed",
+                        exc_info=True)
+            return None
+        for order in orders:
+            side = str(getattr(order, "side", "")).lower()
+            if "buy" not in side:
+                continue
+            sym = str(getattr(order, "symbol", "") or "").upper()
+            if not sym or len(sym) > 6:
+                continue
+            if sym in self._excluded:
+                # Another sleeve's working buy belongs to another sleeve's
+                # dollars, the same boundary _held() draws for positions.
+                continue
+            symbols.add(sym)
+            qty = float(getattr(order, "qty", 0) or 0)
+            px = float(getattr(order, "limit_price", 0) or 0)
+            if px <= 0:
+                quote = self._quote(sym)
+                px = float(quote or 0)
+            if qty > 0 and px > 0:
+                notional += qty * px
+        return symbols, notional
+
     def _underlyings_with_short_calls(self) -> set[str]:
         """Roots of every short call in the account. Never raises."""
         from src.risk.allocation import parse_occ
@@ -90,9 +130,26 @@ class SixfoldExecutor:
         cap = equity * getattr(self._breaker.limits, "max_single_trade_pct", 0.05)
         return max(0.0, min(per_name, cap))
 
-    def committed(self) -> float:
+    def committed(self, included_pending_notional: float | None = None) -> float:
+        """Capital already working in this sleeve: held equities plus the
+        notional of open buys.
+
+        Pass ``included_pending_notional`` when the order book was already
+        read successfully this cycle (run_cycle does); without it, this
+        method re-reads the book, and a failed re-read raises rather than
+        silently reading as $0 pending -- treating an unreadable book as an
+        empty one is the exact failure mode the executor exists to avoid.
+        """
         held = self._held()
-        return sum(v for k, v in held.items() if k not in self._excluded)
+        pending_notional = included_pending_notional
+        if pending_notional is None:
+            exposure = self._open_buy_exposure()
+            if exposure is None:
+                raise RuntimeError(
+                    "open-order book unreadable; cannot compute committed notional")
+            pending_notional = exposure[1]
+        return (sum(v for k, v in held.items() if k not in self._excluded)
+                + pending_notional)
 
     def run_disposals(self) -> list[dict]:
         """Exit names that should no longer be held, on any of three rules.
@@ -263,6 +320,15 @@ class SixfoldExecutor:
             return {"status": "lockouts_unreadable", "orders": [], "disposals": disposed}
 
         held = self._held()
+        exposure = self._open_buy_exposure()
+        if exposure is None:
+            # Fails closed like the lockout table above: an unreadable order
+            # book must not read as "nothing is working", or every open buy
+            # would be duplicated. Disposals already ran and are reported.
+            log.exception("SIXFOLD open-order book unreadable; skipping the buy pass entirely")
+            return {"status": "open_orders_unreadable", "orders": [],
+                    "disposals": disposed}
+        pending_buys, _pending_notional = exposure
         # Count only this sleeve's own positions against its concurrency
         # limit. _held() returns every equity position in the account, so
         # counting it raw let the scalper's 2-4 open names consume SIXFOLD's
@@ -270,11 +336,16 @@ class SixfoldExecutor:
         # candidate was rejected as "at the limit" and the sleeve sat at $38K
         # of its $50K with KO and HD both scoring above the buy threshold.
         # committed() already draws this boundary for dollars; the count has
-        # to draw the same one.
+        # to draw the same one. Pending buys reserve a slot the same way.
         own_held = {k for k in held if k not in self._excluded}
+        own_pending = {k for k in pending_buys if k not in self._excluded}
         budget_each = self.position_budget()
-        room = sleeve - self.committed()
+        # Reuse the notional from the one successful book read above: a second
+        # read inside committed() would fail the same way and must not read as
+        # $0 pending.
+        room = sleeve - self.committed(_pending_notional)
         placed: list[dict] = []
+        inflight: set[str] = set()
 
         for symbol in candidates:
             sym = symbol.upper()
@@ -284,11 +355,14 @@ class SixfoldExecutor:
             if sym in held:
                 self._reject(sym, "already held")
                 continue
+            if sym in pending_buys or sym in inflight:
+                self._reject(sym, "open buy already working")
+                continue
             if sym in lockouts:
                 self._reject(sym, f"re-entry locked out until "
                                   f"{time.strftime('%Y-%m-%d', time.gmtime(lockouts[sym]))}")
                 continue
-            if len(placed) + len(own_held) >= self._max_concurrent:
+            if len(placed) + len(own_held) + len(own_pending) >= self._max_concurrent:
                 self._reject(sym, f"at the {self._max_concurrent}-position limit")
                 continue
 
@@ -360,6 +434,7 @@ class SixfoldExecutor:
                 continue
 
             room -= notional
+            inflight.add(sym)
             council_detail = [
                 {"role": o.role, "verdict": o.verdict, "reasoning": o.reasoning[:120]}
                 for o in council.opinions if o.responded

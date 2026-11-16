@@ -44,7 +44,10 @@ def _score(symbol: str, roic_measured: bool) -> SixfoldScore:
 def _exec(scores: dict, candidates, price=200.0, sleeve=50_000.0, equity=100_000.0):
     client, data, tracker, breaker, allocator, analyst = (MagicMock() for _ in range(6))
     data.get_latest_quote.return_value = MagicMock(mid=price)
-    tracker.get_snapshot.return_value = MagicMock(equity=equity, positions={})
+    tracker.get_snapshot.return_value = MagicMock(
+        equity=equity, cash=equity, positions={},
+    )
+    client.get_orders.return_value = []
     allocator.get_budget.return_value = MagicMock(sixfold_budget=sleeve)
     breaker.check.return_value = True
     breaker.can_trade.return_value = True

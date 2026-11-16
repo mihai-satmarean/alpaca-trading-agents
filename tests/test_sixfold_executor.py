@@ -42,10 +42,16 @@ def _council_reject(symbol, score, fundamentals=None):
 
 
 def _exec(candidates=("JPM",), price=200.0, positions=None, sleeve=50_000.0,
-          equity=100_000.0, can_trade=True, breaker_ok=True, excluded=("AAPL", "SPY", "QQQ")):
+          equity=100_000.0, cash=None, can_trade=True, breaker_ok=True,
+          excluded=("AAPL", "SPY", "QQQ"), open_orders=None):
     client, data, tracker, breaker, allocator, analyst = (MagicMock() for _ in range(6))
     data.get_latest_quote.return_value = MagicMock(mid=price)
-    tracker.get_snapshot.return_value = MagicMock(equity=equity, positions=positions or {})
+    tracker.get_snapshot.return_value = MagicMock(
+        equity=equity,
+        cash=equity if cash is None else cash,
+        positions=positions or {},
+    )
+    client.get_orders.return_value = list(open_orders or [])
     allocator.get_budget.return_value = MagicMock(sixfold_budget=sleeve)
     breaker.check.return_value = breaker_ok
     breaker.can_trade.return_value = can_trade
@@ -208,3 +214,27 @@ class TestTheConcurrencyLimitCountsOnlyThisSleeve:
         ex.run_cycle()
         client.trading.submit_order.assert_not_called()
         assert any("position limit" in r["reason"] for r in ex.last_rejections)
+
+
+@patch(COUNCIL_PATCH, side_effect=_council_approve)
+class TestPendingBuysBlockRestacks:
+    """Open DAY limit buys must count as exposure. Live 2026-11-16 the held
+    check alone let HLNE restack every cycle until ~470 shares / ~$43k filled.
+    """
+
+    def test_an_open_buy_blocks_another_buy_on_the_same_name(self, _m):
+        open_buy = MagicMock(symbol="HLNE", side="buy", qty=47,
+                             limit_price=92.0)
+        ex, client = _exec(["HLNE"], price=92.0, open_orders=[open_buy])
+        assert ex.run_cycle()["orders"] == []
+        client.trading.submit_order.assert_not_called()
+        assert any("open buy" in r["reason"] for r in ex.last_rejections)
+
+    def test_open_buy_notional_consumes_sleeve_room(self, _m):
+        """A working $48k buy leaves no room for another $5k name."""
+        open_buy = MagicMock(symbol="LOPE", side="buy", qty=400,
+                             limit_price=120.0)
+        ex, client = _exec(["JPM"], price=200.0, sleeve=50_000.0,
+                           open_orders=[open_buy])
+        assert ex.run_cycle()["orders"] == []
+        client.trading.submit_order.assert_not_called()

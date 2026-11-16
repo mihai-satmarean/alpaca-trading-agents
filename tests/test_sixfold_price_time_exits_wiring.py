@@ -55,7 +55,18 @@ def _exec(positions=None, flagged=(), scores=None, sleeve=50_000.0,
     breaker.limits = MagicMock(max_single_trade_pct=0.05)
     analyst.get_disposal_candidates.return_value = list(flagged)
     analyst.get_buy_candidates.return_value = []
-    analyst.scores = scores or {}
+    if scores is not None:
+        analyst.scores = scores
+    else:
+        # Default buy fixture: a measured, buyable score -- the same shape
+        # the ROIC gate reads in test_sixfold_open_orders_acceptance.py.
+        # An empty dict here makes every buy fail the "ROIC could not be
+        # measured" gate, which is a production rule, not a fixture choice.
+        analyst.scores = MagicMock()
+        analyst.scores.get.return_value = MagicMock(
+            roic_measured=True,
+            composite_score=80.0,
+        )
     kw = {}
     if exit_cfg is not None:
         kw["exit_cfg"] = exit_cfg

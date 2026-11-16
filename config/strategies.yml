@@ -1,9 +1,11 @@
 allocation:
-  sixfold_pct: 0.20
-  options_pct: 0.15
-  vampire_pct: 0.20
-  pendulum_pct: 0.15
-  reserve_pct: 0.15
+  # SIXFOLD-only paper book (2026-11-16): full budget to equity selection.
+  # Other sleeves kept at 0 so the coordinator idles them; adapters disabled below.
+  sixfold_pct: 0.95
+  options_pct: 0.0
+  vampire_pct: 0.0
+  pendulum_pct: 0.0
+  reserve_pct: 0.05
 pendulum:
   symbol: TLT
   entry_z: -2.0
@@ -21,7 +23,8 @@ pendulum:
   first_tranche: 0.6
   run_after: 09:35
 vampire:
-  paused_until: '2026-09-02'
+  # SIXFOLD-only paper: keep paused even with vampire_pct=0 (belt and suspenders).
+  paused_until: '2099-01-01'
   regime_advisor:
     enabled: true
     model: dell4-chat
@@ -143,9 +146,11 @@ sixfold:
   - MRK
   - PEP
   - KO
-  buy_threshold: 60.0
+  # Aligned with Tashi Tradier sixfold-trader defaults (MIN_SCORE / disposeScore).
+  # NVDA stays in universe (explicit: do not apply Tradier HARD_EXCLUDE).
+  buy_threshold: 65.0
   hold_threshold: 50.0
-  dispose_threshold: 40.0
+  dispose_threshold: 50.0
   max_concurrent: 20
   # Ported from the live Tradier deployment of this same framework
   # (sixfold-trader Lambda, live since 2026-09-01) on 2026-09-10, matching
@@ -169,16 +174,16 @@ risk:
   circuit_breaker_cooldown_minutes: 30
 adapters:
   autobelay:
-    enabled: true
-    capital_pct: 0.125
-    dry_run: false
+    enabled: false
+    capital_pct: 0.0
+    dry_run: true
     config_variant: default
     source: competitors/repos/bill-mccormick-dg__alpaca-hackathon
     temperature: 0.6
   killswitch:
-    enabled: true
-    capital_pct: 0.125
-    dry_run: false
+    enabled: false
+    capital_pct: 0.0
+    dry_run: true
     config_variant: default
     source: competitors/repos/SamsonDoski__alpaca-trading-assistant
     temperature: 0.5
@@ -186,9 +191,9 @@ adapters:
     max_positions: 10
     max_per_group: 6
   shouldai:
-    enabled: true
-    capital_pct: 0.125
-    dry_run: false
+    enabled: false
+    capital_pct: 0.0
+    dry_run: true
     config_variant: default
     source: competitors/repos/nabielnovelkhubran__Should-AI-Buy
     temperature: 0.7
@@ -212,9 +217,9 @@ adapters:
     max_position_pct: 0.02
     scan_interval_seconds: 300
   bull_spread:
-    enabled: true
-    capital_pct: 0.125
-    dry_run: false
+    enabled: false
+    capital_pct: 0.0
+    dry_run: true
     config_variant: default
     source: built-in (VetoAlpha reference)
     symbols:
